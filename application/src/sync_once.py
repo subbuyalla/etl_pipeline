@@ -1,11 +1,13 @@
 """
 Shared Sync-once path used by webhook API and manual trigger.
+
+Pipeline: Snowflake (RAW) -> dbt Cloud -> Snowflake (staging)
+pipeline_id / attach config are loaded from Metadata MySQL (obs_pipelines).
 """
 
 from __future__ import annotations
 
 import importlib.util
-import os
 from pathlib import Path
 from typing import Any
 
@@ -22,10 +24,50 @@ def _load_module(module_name: str, relative: str):
     return mod
 
 
-def store_payload(run_log: dict, source_rows: list[dict], target_rows: list[dict]) -> dict:
+def _resolve_pipeline(
+    *,
+    pipeline_id: str | None = None,
+    pipeline_name: str | None = None,
+) -> dict[str, Any]:
+    """Prefer DB row; create template only if DB has no pipeline yet."""
+    store_mod = _load_module("app_meta_mysql", "application/src/store/meta_mysql.py")
+    pipe_mod = _load_module("app_pipelines", "application/src/pipelines.py")
+
+    if pipeline_id:
+        found = store_mod.get_pipeline_by_id(pipeline_id)
+        if found and found.get("source") and found["source"].get("account_id"):
+            return found
+        # id known but incomplete row → merge template
+        template = pipe_mod.get_stock_etl_pipeline(pipeline_id=pipeline_id)
+        if pipeline_name:
+            template["pipeline_name"] = pipeline_name
+        return template
+
+    active = store_mod.get_active_pipeline()
+    if active and active.get("source") and active["source"].get("account_id"):
+        if pipeline_name:
+            active["pipeline_name"] = pipeline_name
+        return active
+
+    # First-time: build template, save as active in DB
+    template = pipe_mod.get_stock_etl_pipeline()
+    if pipeline_name:
+        template["pipeline_name"] = pipeline_name
+    store_mod.upsert_pipeline(template, make_active=True)
+    return template
+
+
+def store_payload(
+    run_log: dict,
+    source_rows: list[dict],
+    target_rows: list[dict],
+    pipeline: dict | None = None,
+) -> dict:
     """Persist transformed payloads into Metadata MySQL."""
     store_mod = _load_module("app_meta_mysql", "application/src/store/meta_mysql.py")
-    result = store_mod.store_to_meta_mysql(run_log, source_rows, target_rows)
+    result = store_mod.store_to_meta_mysql(
+        run_log, source_rows, target_rows, pipeline=pipeline
+    )
     print(
         "STORE MySQL ok=",
         result.get("ok"),
@@ -43,50 +85,56 @@ def store_payload(run_log: dict, source_rows: list[dict], target_rows: list[dict
 
 def run_sync_once(
     *,
-    pipeline_id: str,
-    pipeline_name: str = "stock_etl",
+    pipeline_id: str | None = None,
+    pipeline_name: str | None = None,
     dbt_run_id: str | None = None,
 ) -> dict[str, Any]:
     """
-    Pull connectors → transform → store once.
-    If dbt_run_id is set (from webhook), prefer that run envelope.
+    Load active pipeline from DB → pull connectors → transform → store.
     """
     map_run_mod = _load_module("app_map_run", "application/src/transform/map_run.py")
     map_ds_mod = _load_module("app_map_dataset", "application/src/transform/map_dataset.py")
     dbt_mod = _load_module("app_dbt", "application/src/connectors/dbt.py")
-    mysql_mod = _load_module("app_mysql", "application/src/connectors/mysql.py")
     sf_mod = _load_module("app_snowflake", "application/src/connectors/snowflake.py")
 
+    pipeline = _resolve_pipeline(pipeline_id=pipeline_id, pipeline_name=pipeline_name)
+    source_cfg = pipeline["source"]
+    etl_cfg = pipeline["etl"]
+    target_cfg = pipeline["target"]
+
     dbt = dbt_mod.DbtConnector(
-        tenant_id="demo",
-        connector_instance_id="api-dbt-1",
-        account_id="70506183151322",
-        project_id="70506183153936",
-        job_id="",
-        project_name="analytics",
-        api_base="https://li589.us1.dbt.com/api/v2",
+        tenant_id=pipeline.get("tenant_id") or "demo",
+        connector_instance_id=etl_cfg["connector_instance_id"],
+        account_id=etl_cfg["account_id"],
+        project_id=etl_cfg.get("project_id") or "",
+        job_id=etl_cfg.get("job_id") or "",
+        project_name=etl_cfg.get("project_name") or "analytics",
+        api_base=etl_cfg.get("api_base") or "https://li589.us1.dbt.com/api/v2",
     )
-    mysql = mysql_mod.MysqlConnector(
-        tenant_id="demo",
-        connector_instance_id="api-mysql-source-1",
-        host="database-1.cbsuuwi6y4bg.eu-north-1.rds.amazonaws.com",
-        user="admin",
-        database=os.getenv("DB_NAME", "metadata"),
-        port=3306,
+    sf_source = sf_mod.SnowflakeConnector(
+        tenant_id=pipeline.get("tenant_id") or "demo",
+        connector_instance_id=source_cfg["connector_instance_id"],
+        account_id=source_cfg["account_id"],
+        user_id=source_cfg["user_id"],
+        warehouse_id=source_cfg["warehouse_id"],
+        database_id=source_cfg["database_id"],
+        role=source_cfg.get("sf_role") or "ACCOUNTADMIN",
+        schema=source_cfg.get("schema") or "RAW",
     )
-    snowflake = sf_mod.SnowflakeConnector(
-        tenant_id="demo",
-        connector_instance_id="api-snowflake-target-1",
-        account_id="jd97000.ap-southeast-7.aws",
-        user_id="Sasi9392",
-        warehouse_id="COMPUTE_WH",
-        database_id="ANALYTICS_DB",
-        role="ACCOUNTADMIN",
+    sf_target = sf_mod.SnowflakeConnector(
+        tenant_id=pipeline.get("tenant_id") or "demo",
+        connector_instance_id=target_cfg["connector_instance_id"],
+        account_id=target_cfg["account_id"],
+        user_id=target_cfg["user_id"],
+        warehouse_id=target_cfg["warehouse_id"],
+        database_id=target_cfg["database_id"],
+        role=target_cfg.get("sf_role") or "ACCOUNTADMIN",
+        schema=target_cfg.get("schema") or "STAGING_STAGING",
     )
 
     dbt_envs = dbt.pull_state()
-    mysql_envs = mysql.pull_state()
-    sf_envs = snowflake.pull_state()
+    source_envs = sf_source.pull_state()
+    target_envs = sf_target.pull_state()
 
     if not dbt_envs:
         return {"ok": False, "message": "No dbt runs found", "stored": False}
@@ -100,25 +148,32 @@ def run_sync_once(
 
     run_log = map_run_mod.map_run(
         chosen,
-        pipeline_id=pipeline_id,
-        pipeline_name=pipeline_name,
+        pipeline_id=pipeline["pipeline_id"],
+        pipeline_name=pipeline.get("pipeline_name") or "stock_etl",
     )
     run_id = run_log["id"]
     source_rows = [
         map_ds_mod.map_dataset(env, run_id=run_id, asset_role="SOURCE")
-        for env in mysql_envs
+        for env in source_envs
     ]
     target_rows = [
         map_ds_mod.map_dataset(env, run_id=run_id, asset_role="TARGET")
-        for env in sf_envs
+        for env in target_envs
     ]
 
-    store_result = store_payload(run_log, source_rows, target_rows)
+    store_result = store_payload(run_log, source_rows, target_rows, pipeline=pipeline)
 
     return {
         "ok": True,
-        "message": "Sync completed and stored in Metadata MySQL",
-        "pipeline_id": pipeline_id,
+        "message": "Sync completed (pipeline loaded from DB)",
+        "pipeline_id": pipeline["pipeline_id"],
+        "pipeline_name": pipeline.get("pipeline_name"),
+        "pipeline_from": "metadata.obs_pipelines",
+        "attachments": {
+            "source": f"snowflake/{source_cfg.get('schema')}",
+            "etl": "dbt",
+            "target": f"snowflake/{target_cfg.get('schema')}",
+        },
         "run_id": run_id,
         "status": run_log.get("status"),
         "source_count": len(source_rows),

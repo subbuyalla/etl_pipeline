@@ -2,12 +2,14 @@
 Store transformed payloads into Metadata MySQL (database from DB_* / .env).
 
 Tables (created if missing):
+  - obs_pipelines       ← pipeline attach (source / etl / target)
   - obs_pipeline_runs   ← colleague pipeline-run log
   - obs_run_assets      ← colleague source/target metadata
 """
 
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime
 from typing import Any
@@ -30,7 +32,6 @@ def _parse_dt(value: Any) -> datetime | None:
 def get_connection():
     """Connect to Metadata MySQL using the same env as the platform."""
     host = os.getenv("DB_HOST") or "database-1.cbsuuwi6y4bg.eu-north-1.rds.amazonaws.com"
-    # Guard against old dead hostname left in .env
     if "c9yg0giiwoxf" in host:
         host = "database-1.cbsuuwi6y4bg.eu-north-1.rds.amazonaws.com"
     user = os.getenv("DB_USER") or "admin"
@@ -53,6 +54,39 @@ def get_connection():
 
 def ensure_tables(conn) -> None:
     with conn.cursor() as cur:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS obs_pipelines (
+              pipeline_id VARCHAR(64) NOT NULL,
+              pipeline_name VARCHAR(255) NOT NULL,
+              tenant_id VARCHAR(128) NULL,
+              description TEXT NULL,
+              source_tool VARCHAR(64) NULL,
+              source_instance_id VARCHAR(128) NULL,
+              source_schema VARCHAR(255) NULL,
+              etl_tool VARCHAR(64) NULL,
+              etl_instance_id VARCHAR(128) NULL,
+              target_tool VARCHAR(64) NULL,
+              target_instance_id VARCHAR(128) NULL,
+              target_schema VARCHAR(255) NULL,
+              config_json LONGTEXT NULL,
+              is_active TINYINT(1) NOT NULL DEFAULT 0,
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                ON UPDATE CURRENT_TIMESTAMP,
+              PRIMARY KEY (pipeline_id),
+              KEY ix_obs_pipelines_name (pipeline_name),
+              KEY ix_obs_pipelines_active (is_active)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
+        )
+        # Older DBs created before is_active existed
+        try:
+            cur.execute(
+                "ALTER TABLE obs_pipelines ADD COLUMN is_active TINYINT(1) NOT NULL DEFAULT 0"
+            )
+        except Exception:
+            pass
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS obs_pipeline_runs (
@@ -112,6 +146,168 @@ def ensure_tables(conn) -> None:
             """
         )
     conn.commit()
+
+
+def store_pipeline(conn, pipeline: dict, *, make_active: bool = True) -> None:
+    source = pipeline.get("source") or {}
+    etl = pipeline.get("etl") or {}
+    target = pipeline.get("target") or {}
+    with conn.cursor() as cur:
+        if make_active:
+            cur.execute("UPDATE obs_pipelines SET is_active = 0 WHERE is_active = 1")
+        cur.execute(
+            """
+            INSERT INTO obs_pipelines (
+              pipeline_id, pipeline_name, tenant_id, description,
+              source_tool, source_instance_id, source_schema,
+              etl_tool, etl_instance_id,
+              target_tool, target_instance_id, target_schema,
+              config_json, is_active
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ON DUPLICATE KEY UPDATE
+              pipeline_name=VALUES(pipeline_name),
+              description=VALUES(description),
+              source_tool=VALUES(source_tool),
+              source_instance_id=VALUES(source_instance_id),
+              source_schema=VALUES(source_schema),
+              etl_tool=VALUES(etl_tool),
+              etl_instance_id=VALUES(etl_instance_id),
+              target_tool=VALUES(target_tool),
+              target_instance_id=VALUES(target_instance_id),
+              target_schema=VALUES(target_schema),
+              config_json=VALUES(config_json),
+              is_active=VALUES(is_active)
+            """,
+            (
+                pipeline.get("pipeline_id"),
+                pipeline.get("pipeline_name"),
+                pipeline.get("tenant_id"),
+                pipeline.get("description"),
+                source.get("tool"),
+                source.get("connector_instance_id"),
+                source.get("schema"),
+                etl.get("tool"),
+                etl.get("connector_instance_id"),
+                target.get("tool"),
+                target.get("connector_instance_id"),
+                target.get("schema"),
+                json.dumps(pipeline, default=str),
+                1 if make_active else 0,
+            ),
+        )
+
+
+def _row_to_pipeline(row: dict) -> dict | None:
+    if not row:
+        return None
+    raw = row.get("config_json")
+    if raw:
+        try:
+            data = json.loads(raw) if isinstance(raw, str) else raw
+            if isinstance(data, dict) and data.get("pipeline_id"):
+                data["is_active"] = bool(row.get("is_active"))
+                return data
+        except json.JSONDecodeError:
+            pass
+    # Fallback if config_json missing
+    return {
+        "pipeline_id": row.get("pipeline_id"),
+        "pipeline_name": row.get("pipeline_name"),
+        "tenant_id": row.get("tenant_id") or "demo",
+        "description": row.get("description"),
+        "is_active": bool(row.get("is_active")),
+        "source": {
+            "tool": row.get("source_tool"),
+            "connector_instance_id": row.get("source_instance_id"),
+            "schema": row.get("source_schema"),
+        },
+        "etl": {
+            "tool": row.get("etl_tool"),
+            "connector_instance_id": row.get("etl_instance_id"),
+        },
+        "target": {
+            "tool": row.get("target_tool"),
+            "connector_instance_id": row.get("target_instance_id"),
+            "schema": row.get("target_schema"),
+        },
+    }
+
+
+def get_pipeline_by_id(pipeline_id: str) -> dict | None:
+    conn = get_connection()
+    try:
+        ensure_tables(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM obs_pipelines WHERE pipeline_id = %s",
+                (pipeline_id,),
+            )
+            return _row_to_pipeline(cur.fetchone() or {})
+    finally:
+        conn.close()
+
+
+def get_active_pipeline() -> dict | None:
+    """Load the active pipeline from DB (no env PIPELINE_ID needed)."""
+    conn = get_connection()
+    try:
+        ensure_tables(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM obs_pipelines WHERE is_active = 1 ORDER BY updated_at DESC LIMIT 1"
+            )
+            row = cur.fetchone()
+            if row:
+                return _row_to_pipeline(row)
+            # Fallback: latest pipeline if none marked active
+            cur.execute(
+                "SELECT * FROM obs_pipelines ORDER BY updated_at DESC LIMIT 1"
+            )
+            return _row_to_pipeline(cur.fetchone() or {})
+    finally:
+        conn.close()
+
+
+def list_pipelines() -> list[dict]:
+    conn = get_connection()
+    try:
+        ensure_tables(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT pipeline_id, pipeline_name, source_tool, source_schema,
+                       etl_tool, target_tool, target_schema, is_active, updated_at
+                FROM obs_pipelines
+                ORDER BY is_active DESC, updated_at DESC
+                """
+            )
+            return list(cur.fetchall() or [])
+    finally:
+        conn.close()
+
+
+def upsert_pipeline(pipeline: dict, *, make_active: bool = True) -> dict[str, Any]:
+    conn = get_connection()
+    try:
+        ensure_tables(conn)
+        store_pipeline(conn, pipeline, make_active=make_active)
+        conn.commit()
+        return {
+            "ok": True,
+            "pipeline_id": pipeline.get("pipeline_id"),
+            "pipeline_name": pipeline.get("pipeline_name"),
+            "is_active": make_active,
+            "source": f"snowflake/{(pipeline.get('source') or {}).get('schema')}",
+            "etl": "dbt",
+            "target": f"snowflake/{(pipeline.get('target') or {}).get('schema')}",
+            "table": "obs_pipelines",
+            "message": "Pipeline saved in DB. Sync/webhook will load it from MySQL (no PIPELINE_ID env needed).",
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def store_run(conn, run_log: dict) -> None:
@@ -220,17 +416,23 @@ def store_to_meta_mysql(
     run_log: dict,
     source_rows: list[dict],
     target_rows: list[dict],
+    pipeline: dict | None = None,
 ) -> dict[str, Any]:
     """Write run + source/target assets into Metadata MySQL."""
     conn = get_connection()
     try:
         ensure_tables(conn)
+        if pipeline:
+            store_pipeline(conn, pipeline)
         store_run(conn, run_log)
         for row in source_rows:
             store_asset(conn, row)
         for row in target_rows:
             store_asset(conn, row)
         conn.commit()
+        tables = ["obs_pipeline_runs", "obs_run_assets"]
+        if pipeline:
+            tables.insert(0, "obs_pipelines")
         return {
             "ok": True,
             "database": os.getenv("DB_NAME") or "metadata",
@@ -238,7 +440,7 @@ def store_to_meta_mysql(
             "pipeline_id": run_log.get("pipeline_id"),
             "sources_stored": len(source_rows),
             "targets_stored": len(target_rows),
-            "tables": ["obs_pipeline_runs", "obs_run_assets"],
+            "tables": tables,
         }
     except Exception:
         conn.rollback()
