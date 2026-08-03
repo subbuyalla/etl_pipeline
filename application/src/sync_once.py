@@ -161,6 +161,15 @@ def run_sync_once(
         for env in target_envs
     ]
 
+    # dbt artifacts often report rows_affected=0 for CTAS/views.
+    # Fall back to Snowflake INFORMATION_SCHEMA row_count from this Sync.
+    src_total = sum(int(r.get("row_count") or 0) for r in source_rows)
+    tgt_total = sum(int(r.get("row_count") or 0) for r in target_rows)
+    if run_log.get("rows_read") in (None, 0) and src_total:
+        run_log["rows_read"] = src_total
+    if run_log.get("rows_written") in (None, 0) and tgt_total:
+        run_log["rows_written"] = tgt_total
+
     store_result = store_payload(run_log, source_rows, target_rows, pipeline=pipeline)
 
     return {
