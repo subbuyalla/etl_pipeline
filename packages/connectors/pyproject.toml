@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "connectors"
+version = "0.1.0"
+description = "CSV-backed connectors (Snowflake, dbt) implementing connector-sdk"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "connector-sdk>=0.1.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0.0"]
+ingest = [
+  "normalization>=0.1.0",
+  "metadata>=0.1.0",
+]
+snowflake = ["snowflake-connector-python>=3.6.0"]
+
+[project.scripts]
+connectors = "connectors.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

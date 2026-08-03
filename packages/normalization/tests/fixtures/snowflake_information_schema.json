@@ -1,0 +1,21 @@
+{
+  "rows": [
+    {
+      "TABLE_CATALOG": "ANALYTICS",
+      "TABLE_SCHEMA": "MART",
+      "TABLE_NAME": "FCT_ORDERS",
+      "ROW_COUNT": 1250000,
+      "LAST_ALTERED": "2026-07-22T06:00:00Z"
+    },
+    {
+      "TABLE_CATALOG": "ANALYTICS",
+      "TABLE_SCHEMA": "MART",
+      "TABLE_NAME": "DIM_CUSTOMER",
+      "ROW_COUNT": 84000,
+      "LAST_ALTERED": "2026-07-21T06:00:00Z",
+      "event_type": "freshness",
+      "sla_minutes": 60,
+      "lag_minutes": 200
+    }
+  ]
+}

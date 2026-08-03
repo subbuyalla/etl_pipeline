@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.local/etl/tool_registry.json",
+  "title": "ToolRegistry",
+  "description": "Every supported ETL / ELT / DB / messaging / storage tool id for normalization",
+  "families": {
+    "etl_orchestration": [
+      "airflow",
+      "glue",
+      "informatica",
+      "adf",
+      "talend",
+      "ssis",
+      "nifi",
+      "prefect",
+      "dagster"
+    ],
+    "elt_transform": ["dbt"],
+    "warehouse_database": [
+      "snowflake",
+      "bigquery",
+      "databricks",
+      "redshift",
+      "oracle",
+      "postgres",
+      "mysql",
+      "sqlserver"
+    ],
+    "streaming_storage": ["kafka", "s3", "gcs", "adls"],
+    "saas_source": ["salesforce", "sap", "generic_api"]
+  }
+}

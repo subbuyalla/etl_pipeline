@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "metadata"
+version = "0.1.0"
+description = "Metadata layer: canonical store for ETL/ELT observability (Monte Carlo parity + beyond)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "sqlalchemy>=2.0.30",
+  "fastapi>=0.111.0",
+  "uvicorn[standard]>=0.30.0",
+  "pydantic>=2.7.0",
+  "python-dateutil>=2.9.0",
+  "python-dotenv>=1.0.0",
+  "pymysql>=1.1.0",
+  "cryptography>=42.0.0",
+  "python-multipart>=0.0.9",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0.0", "httpx>=0.27.0"]
+mysql = ["pymysql>=1.1.0", "cryptography>=42.0.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

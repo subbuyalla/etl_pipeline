@@ -1,0 +1,4 @@
+dag_id,dag_run_id,state,start_date,end_date,task_id,try_number,error
+finance_etl,manual__2026-07-28T10:00:00+00:00,failed,2026-07-28T10:00:01+00:00,2026-07-28T10:12:00+00:00,,,Twin simulated DAG failure
+finance_etl,manual__2026-07-28T10:00:00+00:00,failed,2026-07-28T10:01:00+00:00,2026-07-28T10:05:00+00:00,extract_orders,2,Connection timeout to Snowflake
+marketing_sync,scheduled__2026-07-28T08:00:00+00:00,success,2026-07-28T08:00:05+00:00,2026-07-28T08:20:00+00:00,,,

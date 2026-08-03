@@ -1,0 +1,23 @@
+# Local secrets — DO NOT COMMIT
+.env
+.env.local
+*.pem
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# Local DBs
+*.db
+twin_test.db
+vithi_metadata.db
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,14 @@
+{
+  "tables": [
+    {
+      "kind": "bigquery#table",
+      "tableReference": {
+        "projectId": "acme-prod",
+        "datasetId": "mart",
+        "tableId": "orders"
+      },
+      "creationTime": "1609459200000",
+      "numRows": "999"
+    }
+  ]
+}

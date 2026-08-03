@@ -1,0 +1,8 @@
+event_type,database,schema,table,row_count,last_altered,lag_minutes,severity,change_type,null_rate
+discovered,ANALYTICS,RAW,CUSTOMERS,5000,2026-07-20T00:00:00Z,,,
+discovered,ANALYTICS,RAW,ORDERS,12000,2026-07-24T08:00:00Z,,,
+discovered,ANALYTICS,MART,FCT_ORDERS,11000,2026-07-24T09:00:00Z,,,
+freshness,ANALYTICS,RAW,ORDERS,,2026-07-23T01:00:00Z,1800,high,,
+volume,ANALYTICS,MART,FCT_ORDERS,50,,,medium,,
+schema,ANALYTICS,RAW,CUSTOMERS,,,,high,column_removed,
+distribution,ANALYTICS,MART,FCT_ORDERS,,,,medium,,0.42

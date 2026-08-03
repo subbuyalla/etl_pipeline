@@ -1,0 +1,23 @@
+{
+  "dag_runs": [
+    {
+      "dag_id": "finance_etl",
+      "dag_run_id": "manual__2026-07-22T10:00:00+00:00",
+      "logical_date": "2026-07-22T10:00:00+00:00",
+      "execution_date": "2026-07-22T10:00:00+00:00",
+      "start_date": "2026-07-22T10:00:01+00:00",
+      "end_date": "2026-07-22T10:12:00+00:00",
+      "state": "failed",
+      "external_trigger": true,
+      "conf": {}
+    },
+    {
+      "dag_id": "marketing_sync",
+      "dag_run_id": "scheduled__2026-07-22T08:00:00+00:00",
+      "state": "success",
+      "execution_date": "2026-07-22T08:00:00+00:00",
+      "start_date": "2026-07-22T08:00:05+00:00",
+      "end_date": "2026-07-22T08:20:00+00:00"
+    }
+  ]
+}

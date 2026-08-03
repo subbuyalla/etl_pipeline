@@ -1,0 +1,15 @@
+{
+  "task_instances": [
+    {
+      "dag_id": "finance_etl",
+      "task_id": "extract_orders",
+      "dag_run_id": "manual__2026-07-22T10:00:00+00:00",
+      "execution_date": "2026-07-22T10:00:00+00:00",
+      "start_date": "2026-07-22T10:01:00+00:00",
+      "end_date": "2026-07-22T10:05:00+00:00",
+      "state": "up_for_retry",
+      "try_number": 2,
+      "max_tries": 3
+    }
+  ]
+}

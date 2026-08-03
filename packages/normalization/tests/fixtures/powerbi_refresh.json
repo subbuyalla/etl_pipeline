@@ -1,0 +1,10 @@
+{
+  "id": "refresh-77",
+  "dataset": "Sales Dataset",
+  "workspace": "Finance WS",
+  "status": "Failed",
+  "startTime": "2026-07-22T05:00:00Z",
+  "endTime": "2026-07-22T05:10:00Z",
+  "error": "Credential expired",
+  "kind": "refresh"
+}
