@@ -29,7 +29,7 @@ def _resolve_pipeline(
     pipeline_id: str | None = None,
     pipeline_name: str | None = None,
 ) -> dict[str, Any]:
-    """Prefer DB row; create template only if DB has no pipeline yet."""
+    """Prefer DB row; create template only if DB has no matching pipeline yet."""
     store_mod = _load_module("app_meta_mysql", "application/src/store/meta_mysql.py")
     pipe_mod = _load_module("app_pipelines", "application/src/pipelines.py")
 
@@ -37,24 +37,39 @@ def _resolve_pipeline(
         found = store_mod.get_pipeline_by_id(pipeline_id)
         if found and found.get("source") and found["source"].get("account_id"):
             return found
-        # id known but incomplete row → merge template
-        template = pipe_mod.get_stock_etl_pipeline(pipeline_id=pipeline_id)
+        template = pipe_mod.get_pipeline_template(
+            pipeline_name, pipeline_id=pipeline_id
+        )
         if pipeline_name:
             template["pipeline_name"] = pipeline_name
         return template
 
+    if pipeline_name:
+        found = store_mod.get_pipeline_by_name(pipeline_name)
+        if found and found.get("source") and found["source"].get("account_id"):
+            return found
+        template = pipe_mod.get_pipeline_template(pipeline_name)
+        store_mod.upsert_pipeline(template, make_active=False)
+        return template
+
     active = store_mod.get_active_pipeline()
     if active and active.get("source") and active["source"].get("account_id"):
-        if pipeline_name:
-            active["pipeline_name"] = pipeline_name
         return active
 
-    # First-time: build template, save as active in DB
+    # First-time: build stock template, save as active in DB
     template = pipe_mod.get_stock_etl_pipeline()
-    if pipeline_name:
-        template["pipeline_name"] = pipeline_name
     store_mod.upsert_pipeline(template, make_active=True)
     return template
+
+
+def _resolve_dbt_token(etl_cfg: dict) -> str | None:
+    """Per-pipeline dbt token: explicit api_token, else api_token_env, else default env."""
+    import os
+
+    if etl_cfg.get("api_token"):
+        return str(etl_cfg["api_token"])
+    env_name = (etl_cfg.get("api_token_env") or "DBT_CLOUD_API_TOKEN").strip()
+    return os.getenv(env_name) or os.getenv("DBT_CLOUD_API_TOKEN") or None
 
 
 def store_payload(
@@ -110,6 +125,7 @@ def run_sync_once(
         job_id=etl_cfg.get("job_id") or "",
         project_name=etl_cfg.get("project_name") or "analytics",
         api_base=etl_cfg.get("api_base") or "https://li589.us1.dbt.com/api/v2",
+        api_token=_resolve_dbt_token(etl_cfg),
     )
     sf_source = sf_mod.SnowflakeConnector(
         tenant_id=pipeline.get("tenant_id") or "demo",

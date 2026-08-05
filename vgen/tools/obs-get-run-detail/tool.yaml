@@ -1,0 +1,27 @@
+id: 6a72cce2d2a5c44a535440dd
+name: Obs Get Run Detail
+description: Get one pipeline run plus SOURCE/TARGET assets for RCA from Metadata MySQL
+type: FAAS
+input_modes:
+- application/json
+output_modes:
+- application/json
+systemInstructions:
+- Use for root-cause analysis after you have a run_id (often from obs-list-runs with status=failed).
+- Returns the run row (including error_message, rows_added) and SOURCE/TARGET assets with row_count and last_updated_at.
+- Explain failures using error_message and asset context. Do not invent fixes that are not grounded in this data.
+arguments:
+  run_id:
+    description: Run id (obs_pipeline_runs.id — usually the dbt run id)
+    required: true
+    type: string
+examples:
+- Why did this run fail?
+tags:
+- etl
+- rca
+- observability
+createdBy: ''
+managedBy: []
+version: '1.0'
+functionId: 8697136d-07bb-4532-9cd8-6b90169f9cca

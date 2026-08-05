@@ -2,6 +2,12 @@
 .env
 .env.local
 *.pem
+vgen/.env
+
+# Node / binaries
+node_modules/
+vgen/vgen.exe
+*.exe
 
 # Python
 __pycache__/

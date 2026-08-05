@@ -87,6 +87,12 @@ def ensure_tables(conn) -> None:
             )
         except Exception:
             pass
+        try:
+            cur.execute(
+                "ALTER TABLE obs_pipeline_runs ADD COLUMN rows_added BIGINT NULL"
+            )
+        except Exception:
+            pass
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS obs_pipeline_runs (
@@ -100,6 +106,7 @@ def ensure_tables(conn) -> None:
               tool_name VARCHAR(64) NULL,
               rows_read BIGINT NULL,
               rows_written BIGINT NULL,
+              rows_added BIGINT NULL,
               error_message TEXT NULL,
               raw_log LONGTEXT NULL,
               execution_mode VARCHAR(64) NULL,
@@ -145,6 +152,7 @@ def ensure_tables(conn) -> None:
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """
         )
+        backfill_rows_added(conn)
     conn.commit()
 
 
@@ -247,6 +255,29 @@ def get_pipeline_by_id(pipeline_id: str) -> dict | None:
         conn.close()
 
 
+def get_pipeline_by_name(pipeline_name: str) -> dict | None:
+    """Lookup pipeline attach config by name (case-insensitive)."""
+    name = (pipeline_name or "").strip()
+    if not name:
+        return None
+    conn = get_connection()
+    try:
+        ensure_tables(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT * FROM obs_pipelines
+                WHERE LOWER(pipeline_name) = LOWER(%s)
+                ORDER BY is_active DESC, updated_at DESC
+                LIMIT 1
+                """,
+                (name,),
+            )
+            return _row_to_pipeline(cur.fetchone() or {})
+    finally:
+        conn.close()
+
+
 def get_active_pipeline() -> dict | None:
     """Load the active pipeline from DB (no env PIPELINE_ID needed)."""
     conn = get_connection()
@@ -310,19 +341,150 @@ def upsert_pipeline(pipeline: dict, *, make_active: bool = True) -> dict[str, An
         conn.close()
 
 
+def _target_row_total(rows: list[dict]) -> int:
+    return sum(int(r.get("row_count") or 0) for r in rows)
+
+
+def get_previous_target_row_count(
+    conn, pipeline_id: str, current_run_id: str
+) -> int | None:
+    """Sum TARGET row_count from the prior run for this pipeline (by start_time)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id FROM obs_pipeline_runs
+            WHERE pipeline_id = %s AND id != %s
+            ORDER BY start_time DESC, id DESC
+            LIMIT 1
+            """,
+            (pipeline_id, current_run_id),
+        )
+        prev = cur.fetchone()
+        if not prev:
+            return None
+        cur.execute(
+            """
+            SELECT COALESCE(SUM(row_count), 0) AS total
+            FROM obs_run_assets
+            WHERE run_id = %s AND asset_role = 'TARGET'
+            """,
+            (prev["id"],),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return int(row["total"])
+
+
+def compute_rows_added(
+    *,
+    target_row_total: int | None,
+    rows_written: int | None,
+    previous_target_row_total: int | None,
+) -> int | None:
+    """
+    Net new rows in the target table vs the previous run.
+    First run: rows_added = current target size.
+    Full refresh (same size): rows_added = 0.
+    """
+    current = target_row_total
+    if current is None and rows_written is not None:
+        current = int(rows_written)
+    if current is None:
+        return None
+    if previous_target_row_total is None:
+        return int(current)
+    return int(current) - int(previous_target_row_total)
+
+
+def apply_rows_added(conn, run_log: dict, target_rows: list[dict]) -> None:
+    """Set run_log['rows_added'] from target snapshots vs previous run."""
+    pipeline_id = str(run_log.get("pipeline_id") or "")
+    run_id = str(run_log.get("id") or "")
+    if not pipeline_id or not run_id:
+        return
+    tgt_total = _target_row_total(target_rows)
+    prev_total = get_previous_target_row_count(conn, pipeline_id, run_id)
+    run_log["rows_added"] = compute_rows_added(
+        target_row_total=tgt_total if tgt_total else None,
+        rows_written=run_log.get("rows_written"),
+        previous_target_row_total=prev_total,
+    )
+
+
+def backfill_rows_added(conn) -> int:
+    """Backfill rows_added for runs that predate the column (ordered per pipeline)."""
+    updated = 0
+    with conn.cursor() as cur:
+        cur.execute("SELECT DISTINCT pipeline_id FROM obs_pipeline_runs")
+        pipeline_ids = [r["pipeline_id"] for r in (cur.fetchall() or [])]
+        for pipeline_id in pipeline_ids:
+            cur.execute(
+                """
+                SELECT id, rows_written, rows_added
+                FROM obs_pipeline_runs
+                WHERE pipeline_id = %s
+                ORDER BY start_time ASC, id ASC
+                """,
+                (pipeline_id,),
+            )
+            runs = cur.fetchall() or []
+            prev_tgt: int | None = None
+            for run in runs:
+                if run.get("rows_added") is not None:
+                    cur.execute(
+                        """
+                        SELECT COALESCE(SUM(row_count), 0) AS total
+                        FROM obs_run_assets
+                        WHERE run_id = %s AND asset_role = 'TARGET'
+                        """,
+                        (run["id"],),
+                    )
+                    snap = cur.fetchone()
+                    tgt = int(snap["total"]) if snap else 0
+                    if not tgt and run.get("rows_written"):
+                        tgt = int(run["rows_written"])
+                    prev_tgt = tgt
+                    continue
+                cur.execute(
+                    """
+                    SELECT COALESCE(SUM(row_count), 0) AS total
+                    FROM obs_run_assets
+                    WHERE run_id = %s AND asset_role = 'TARGET'
+                    """,
+                    (run["id"],),
+                )
+                snap = cur.fetchone()
+                tgt = int(snap["total"]) if snap else 0
+                if not tgt and run.get("rows_written"):
+                    tgt = int(run["rows_written"])
+                added = compute_rows_added(
+                    target_row_total=tgt if tgt else None,
+                    rows_written=run.get("rows_written"),
+                    previous_target_row_total=prev_tgt,
+                )
+                cur.execute(
+                    "UPDATE obs_pipeline_runs SET rows_added = %s WHERE id = %s",
+                    (added, run["id"]),
+                )
+                updated += cur.rowcount
+                prev_tgt = tgt if tgt else prev_tgt
+    return updated
+
+
 def store_run(conn, run_log: dict) -> None:
     with conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO obs_pipeline_runs (
               id, pipeline_id, pipeline_name, status, start_time, end_time, duration,
-              tool_name, rows_read, rows_written, error_message, raw_log,
+              tool_name, rows_read, rows_written, rows_added, error_message, raw_log,
               execution_mode, triggered_by, orchestrator_tool,
               orchestrator_dag_id, orchestrator_task_id, orchestrator_run_id,
               tenant_id, connector_instance_id
             ) VALUES (
               %s,%s,%s,%s,%s,%s,%s,
-              %s,%s,%s,%s,%s,
+              %s,%s,%s,%s,%s,%s,
               %s,%s,%s,
               %s,%s,%s,
               %s,%s
@@ -335,7 +497,8 @@ def store_run(conn, run_log: dict) -> None:
               error_message=VALUES(error_message),
               raw_log=VALUES(raw_log),
               rows_read=VALUES(rows_read),
-              rows_written=VALUES(rows_written)
+              rows_written=VALUES(rows_written),
+              rows_added=VALUES(rows_added)
             """,
             (
                 str(run_log.get("id") or ""),
@@ -348,6 +511,7 @@ def store_run(conn, run_log: dict) -> None:
                 run_log.get("tool_name"),
                 run_log.get("rows_read"),
                 run_log.get("rows_written"),
+                run_log.get("rows_added"),
                 run_log.get("error_message"),
                 run_log.get("raw_log"),
                 run_log.get("execution_mode"),
@@ -424,6 +588,7 @@ def store_to_meta_mysql(
         ensure_tables(conn)
         if pipeline:
             store_pipeline(conn, pipeline)
+        apply_rows_added(conn, run_log, target_rows)
         store_run(conn, run_log)
         for row in source_rows:
             store_asset(conn, row)

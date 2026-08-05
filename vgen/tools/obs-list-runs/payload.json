@@ -1,0 +1,10 @@
+{
+  "context": {
+    "input": {
+      "pipeline_id": "REPLACE_WITH_PIPELINE_ID",
+      "limit": 20,
+      "status": "",
+      "time_window": "today"
+    }
+  }
+}

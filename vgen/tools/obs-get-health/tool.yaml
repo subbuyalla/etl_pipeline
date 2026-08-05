@@ -1,0 +1,49 @@
+id: 6a72cce3d2a5c44a535440de
+name: Obs Get Health
+description: Compute pipeline health — freshness, volume deltas, success rate, coarse lineage — from Metadata MySQL
+type: FAAS
+input_modes:
+- application/json
+output_modes:
+- application/json
+systemInstructions:
+- Primary tool for is-it-healthy, freshness, volume, success rate, and coarse lineage questions.
+- Accepts pipeline_id as UUID OR pipeline name (e.g. stock_etl). pipeline_name also works.
+- Freshness and windows use MySQL UTC_TIMESTAMP — quote server_now in the answer.
+- rows_added on latest_run = net new target rows vs previous run (0 = no table growth).
+- avg_duration_seconds / duration_seconds are SECONDS. Also returns avg_duration_display — agents must quote these, never invent minutes.
+- Do not invent metrics; only report numbers returned here.
+arguments:
+  lookback_runs:
+    description: When time_window is omitted, how many recent runs to use for success rate (default 10)
+    required: false
+    type: number
+  pipeline_id:
+    description: Pipeline UUID OR pipeline name (e.g. stock_etl) — name is resolved automatically
+    required: true
+    type: string
+  pipeline_name:
+    description: Optional pipeline name if not using pipeline_id (e.g. stock_etl)
+    required: false
+    type: string
+  sla_hours:
+    description: Max allowed freshness lag in hours (default 24)
+    required: false
+    type: number
+  time_window:
+    description: 'Metrics window: today | yesterday | last_24h | last_7_days | omit for last 10 runs'
+    required: false
+    type: string
+examples:
+- Is stock_etl healthy?
+- What is today's success rate?
+tags:
+- etl
+- observability
+- freshness
+- volume
+- metrics
+createdBy: ''
+managedBy: []
+version: '1.0'
+functionId: c81b6200-0388-4581-994d-91198fbd72d6

@@ -88,6 +88,7 @@ def map_run(
         "tool_name": envelope.get("source_system") or "dbt",
         "rows_read": raw.get("rows_read"),
         "rows_written": raw.get("rows_written"),
+        "rows_added": None,
         "error_message": err,
         "raw_log": json.dumps(raw, default=str),
         "execution_mode": execution_mode,

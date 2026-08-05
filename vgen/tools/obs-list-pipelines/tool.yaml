@@ -1,0 +1,29 @@
+id: 6a72ccddd2a5c44a535440da
+name: Obs List Pipelines
+description: List ETL pipelines from Metadata MySQL for disambiguation and discovery
+type: FAAS
+input_modes:
+- application/json
+output_modes:
+- application/json
+systemInstructions:
+- Call this first when the user does not name a pipeline, or asks which pipelines exist.
+- Returns pipeline_id, pipeline_name, is_active, and source/etl/target schemas from obs_pipelines.
+- Optional name_filter matches pipeline_name (LIKE). Never invent pipeline ids.
+- Always include server_now from the tool response when talking about time.
+arguments:
+  name_filter:
+    description: Optional partial pipeline name to filter (case-insensitive LIKE)
+    required: false
+    type: string
+examples:
+- What pipelines do we have?
+- Is the pipeline healthy?
+tags:
+- etl
+- observability
+- metadata
+createdBy: ''
+managedBy: []
+version: '1.0'
+functionId: 8df7375f-7e95-4b6d-976b-330df8d7ee37
