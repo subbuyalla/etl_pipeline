@@ -63,7 +63,7 @@ The assistant **`sql-assistant`** uses YAML at **`assistants/sql-assistant.yaml`
 
 **`assistants/sql-assistant/prompt.json`**
 
-This repo includes a starter **`prompt.json`** with a `"prompt"` field. If your CLI version expects a different shape (e.g. `messages` array), adjust the file to match your internal VGen docs.
+This repo includes a starter **`prompt.json`** with both **`prompt`** and **`question`** fields (same text). Newer API agent-assign requires **`question`**; keep both for CLI compatibility. Write the file as UTF-8 **without BOM** (PowerShell `Set-Content -Encoding utf8` adds a BOM that breaks the CLI).
 
 Run:
 

@@ -1,398 +1,335 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useMemo, useState, type FormEvent } from "react";
 import {
-  api,
-  type ConnectorCatalogItem,
-  type ConnectorIngestResult,
+  deleteConnector,
+  listConnectors,
+  saveConnector,
   type ConnectorInstance,
-} from "../api/client";
-import { ErrorBanner, Loading, PageHeader, Status } from "../components/ui";
+  type ConnectorKind,
+  type ConnectorTool,
+} from "../lib/studioStore";
 
-type FormState = Record<string, string>;
+type ToolDef = {
+  tool: ConnectorTool;
+  kind: ConnectorKind;
+  title: string;
+  blurb: string;
+  fields: { key: string; label: string; type?: string; placeholder?: string; required?: boolean }[];
+};
 
-function schemaDefaults(spec: ConnectorCatalogItem | undefined): FormState {
-  const out: FormState = {};
-  if (!spec) return out;
-  const props = (spec.config_schema?.properties || {}) as Record<string, { default?: unknown }>;
-  Object.entries(props).forEach(([k, v]) => {
-    if (v.default != null) out[k] = String(v.default);
-  });
-  if (!out.input_mode) out.input_mode = (spec.input_modes || ["live"])[0] || "live";
+const DATABASE_TOOLS: ToolDef[] = [
+  {
+    tool: "snowflake",
+    kind: "database",
+    title: "Snowflake",
+    blurb: "Cloud data warehouse — use as SOURCE or TARGET for a pipeline.",
+    fields: [
+      { key: "account", label: "Account", placeholder: "xy12345.us-east-1", required: true },
+      { key: "user", label: "User", required: true },
+      { key: "password", label: "Password", type: "password", required: true },
+      { key: "warehouse", label: "Warehouse", placeholder: "COMPUTE_WH", required: true },
+      { key: "database", label: "Database", placeholder: "ANALYTICS_DB", required: true },
+      { key: "schema", label: "Schema", placeholder: "RAW", required: true },
+      { key: "role", label: "Role", placeholder: "ACCOUNTADMIN" },
+    ],
+  },
+  {
+    tool: "mysql",
+    kind: "database",
+    title: "MySQL",
+    blurb: "Relational database — connect as a source or metadata store.",
+    fields: [
+      { key: "host", label: "Host", placeholder: "127.0.0.1", required: true },
+      { key: "port", label: "Port", placeholder: "3306" },
+      { key: "user", label: "User", required: true },
+      { key: "password", label: "Password", type: "password", required: true },
+      { key: "database", label: "Database", required: true },
+    ],
+  },
+];
+
+const ETL_TOOLS: ToolDef[] = [
+  {
+    tool: "dbt",
+    kind: "etl",
+    title: "dbt Cloud",
+    blurb: "Run transforms between source and target warehouses.",
+    fields: [
+      { key: "account_id", label: "Account ID", required: true },
+      { key: "project_id", label: "Project / Pipeline ID", required: true },
+      { key: "job_id", label: "Job ID (optional)" },
+      {
+        key: "api_base",
+        label: "API base URL",
+        placeholder: "https://xxxx.us1.dbt.com/api/v2",
+        required: true,
+      },
+      { key: "api_token", label: "API token", type: "password", required: true },
+      { key: "project_name", label: "Project name", placeholder: "analytics" },
+    ],
+  },
+];
+
+function defaultsFor(tool: ToolDef): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const f of tool.fields) {
+    out[f.key] = f.placeholder && !f.required ? "" : "";
+  }
+  if (tool.tool === "dbt") {
+    out.api_base = "https://cloud.getdbt.com/api/v2";
+  }
+  if (tool.tool === "mysql") {
+    out.port = "3306";
+  }
   return out;
 }
 
-function configToForm(config: Record<string, unknown>, spec: ConnectorCatalogItem | undefined): FormState {
-  const base = schemaDefaults(spec);
-  Object.entries(config || {}).forEach(([k, v]) => {
-    if (v != null) base[k] = String(v);
-  });
-  return base;
-}
-
-export function ConnectorsPage({ tenantId }: { tenantId: string }) {
-  const [catalog, setCatalog] = useState<ConnectorCatalogItem[]>([]);
-  const [instances, setInstances] = useState<ConnectorInstance[]>([]);
-  const [selectedTool, setSelectedTool] = useState("snowflake");
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [name, setName] = useState("My Snowflake");
-  const [form, setForm] = useState<FormState>({});
-  const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
-  const [csvFile, setCsvFile] = useState<File | null>(null);
-  const [csvResult, setCsvResult] = useState<ConnectorIngestResult | null>(null);
-  const [showCsv, setShowCsv] = useState(false);
-
-  const spec = useMemo(
-    () => catalog.find((c) => c.tool_id === selectedTool),
-    [catalog, selectedTool],
-  );
-
-  async function refresh() {
-    const [cat, inst] = await Promise.all([api.connectorCatalog(), api.connectorInstances(tenantId)]);
-    setCatalog(cat.items);
-    setInstances(inst.items);
-    if (cat.items[0] && !cat.items.find((c) => c.tool_id === selectedTool)) {
-      setSelectedTool(cat.items[0].tool_id);
-    }
-  }
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      setLoading(true);
-      try {
-        await refresh();
-      } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tenantId]);
-
-  useEffect(() => {
-    if (editingId) return;
-    setForm(schemaDefaults(spec));
-    setName(spec ? `My ${spec.display_name}` : "My connector");
-  }, [spec, editingId]);
-
-  const fields = useMemo(() => {
-    const props = (spec?.config_schema?.properties || {}) as Record<
-      string,
-      { title?: string; description?: string; enum?: string[]; type?: string; default?: unknown }
-    >;
-    return Object.entries(props);
-  }, [spec]);
-
-  function setField(key: string, value: string) {
-    setForm((prev) => ({ ...prev, [key]: value }));
-  }
-
-  function startNew() {
-    setEditingId(null);
-    setError(null);
-    setMessage(null);
-    setForm(schemaDefaults(spec));
-    setName(spec ? `My ${spec.display_name}` : "My connector");
-  }
-
-  function selectInstance(inst: ConnectorInstance) {
-    const toolSpec = catalog.find((c) => c.tool_id === inst.tool_id);
-    setEditingId(inst.instance_id);
-    setSelectedTool(inst.tool_id);
-    setName(inst.name);
-    setForm(configToForm(inst.config as Record<string, unknown>, toolSpec));
-    setError(null);
-    setMessage(`Editing ${inst.instance_id}`);
-  }
-
-  function buildSecretsRef(): Record<string, string> {
-    const secrets_ref: Record<string, string> = {};
-    for (const sf of spec?.secret_fields || []) {
-      const envKey = form[`${sf}_env`];
-      if (envKey) secrets_ref[`${sf}_env`] = envKey;
-    }
-    return secrets_ref;
-  }
-
-  async function onSubmit(e: FormEvent) {
-    e.preventDefault();
-    if (!spec) return;
-    setBusy(true);
-    setError(null);
-    setMessage(null);
-    const secrets_ref = buildSecretsRef();
-    try {
-      if (editingId) {
-        const updated = await api.updateConnectorInstance(editingId, {
-          tenant_id: tenantId,
-          name,
-          config: { ...form },
-          secrets_ref,
-        });
-        setMessage(`Updated ${updated.instance_id}`);
-      } else {
-        const created = await api.createConnectorInstance({
-          tenant_id: tenantId,
-          tool_id: selectedTool,
-          name,
-          config: { ...form },
-          secrets_ref,
-        });
-        setEditingId(created.instance_id);
-        setMessage(`Created ${created.instance_id}`);
-      }
-      await refresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function onDelete() {
-    if (!editingId) return;
-    if (!window.confirm(`Delete connection ${editingId}?`)) return;
-    setBusy(true);
-    setError(null);
-    setMessage(null);
-    try {
-      await api.deleteConnectorInstance(tenantId, editingId);
-      setMessage(`Deleted ${editingId}`);
-      startNew();
-      await refresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function onTest(instanceId: string) {
-    setBusy(true);
-    setError(null);
-    setMessage(null);
-    try {
-      const res = await api.testConnectorInstance(tenantId, instanceId);
-      setMessage(
-        res.result.ok ? `Test OK: ${res.result.message}` : `Test failed: ${res.result.message}`,
-      );
-      await refresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function onSync(instanceId: string) {
-    setBusy(true);
-    setError(null);
-    setMessage(null);
-    try {
-      const res = await api.syncConnectorInstance(tenantId, instanceId);
-      setMessage(
-        `Sync ${res.run_id}: envelopes=${res.envelopes} ingested=${res.ingested} duplicates=${res.duplicates}`,
-      );
-      await refresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function onCsv(e: FormEvent) {
-    e.preventDefault();
-    if (!csvFile) {
-      setError("Choose a CSV file first.");
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    setCsvResult(null);
-    try {
-      const res = await api.ingestConnectorCsv(selectedTool, tenantId, csvFile);
-      setCsvResult(res);
-      setMessage(`CSV ingest: ${res.ingested} ingested`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  if (loading) return <Loading />;
-
+function ToolSection({
+  title,
+  tools,
+  selected,
+  onSelect,
+}: {
+  title: string;
+  tools: ToolDef[];
+  selected: ConnectorTool | null;
+  onSelect: (t: ToolDef) => void;
+}) {
   return (
-    <div>
-      <PageHeader
-        title="Connectors"
-        subtitle="Select a connection on the right to edit it on the left. Create, update, delete, test, and sync."
-      />
-      <ErrorBanner error={error} />
-      {message && <div className="info-banner">{message}</div>}
-
-      <div className="connector-catalog">
-        {catalog.map((c) => (
+    <div className="section-block">
+      <p className="section-label">{title}</p>
+      <div className="card-grid">
+        {tools.map((t) => (
           <button
-            key={c.tool_id}
             type="button"
-            className={`catalog-card ${selectedTool === c.tool_id && !editingId ? "active" : ""}`}
-            onClick={() => {
-              setSelectedTool(c.tool_id);
-              if (!editingId || instances.find((i) => i.instance_id === editingId)?.tool_id !== c.tool_id) {
-                startNew();
-                setSelectedTool(c.tool_id);
-              }
-            }}
+            key={t.tool}
+            className={`tool-card ${selected === t.tool ? "selected" : ""}`}
+            onClick={() => onSelect(t)}
           >
-            <strong>{c.display_name}</strong>
-            <span className="muted">{c.description}</span>
-            <span className="mono muted">{(c.input_modes || []).join(" · ")}</span>
+            <span className="tool-badge">{t.kind === "database" ? "Database" : "ETL tool"}</span>
+            <h3>{t.title}</h3>
+            <p>{t.blurb}</p>
+            <span className="btn secondary" style={{ pointerEvents: "none", width: "fit-content" }}>
+              Connect
+            </span>
           </button>
         ))}
       </div>
+    </div>
+  );
+}
 
-      <div className="split">
-        <section className="panel">
-          <div className="panel-head">
-            <h2>{editingId ? "Edit connection" : "Add connection"}</h2>
-            <button type="button" className="btn-link" onClick={startNew}>
-              New
-            </button>
-          </div>
-          {editingId && (
-            <p className="panel-pad muted mono" style={{ paddingBottom: 0 }}>
-              {editingId}
-            </p>
-          )}
-          <form className="panel-pad connector-form" onSubmit={onSubmit}>
-            <label>
-              <span>Display name</span>
-              <input value={name} onChange={(e) => setName(e.target.value)} required />
-            </label>
-            <label>
-              <span>Tenant</span>
-              <input value={tenantId} disabled />
-            </label>
-            {fields.map(([key, meta]) => (
-              <label key={key}>
-                <span>{meta.title || key}</span>
-                {meta.enum ? (
-                  <select value={form[key] || ""} onChange={(e) => setField(key, e.target.value)}>
-                    {meta.enum.map((opt) => (
-                      <option key={opt} value={opt}>
-                        {opt}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <input
-                    value={form[key] || ""}
-                    onChange={(e) => setField(key, e.target.value)}
-                    placeholder={meta.description || ""}
-                  />
-                )}
-                {meta.description && <small className="muted">{meta.description}</small>}
-              </label>
-            ))}
-            <p className="muted">
-              Secrets stay in env vars (e.g. <span className="mono">SNOWFLAKE_PASSWORD</span>).
-            </p>
-            <div className="row-actions">
-              <button type="submit" disabled={busy}>
-                {busy ? "Saving…" : editingId ? "Update" : "Create connection"}
-              </button>
-              {editingId && (
-                <button type="button" className="btn-danger" disabled={busy} onClick={onDelete}>
-                  Delete
-                </button>
-              )}
+export function ConnectorsPage() {
+  const [instances, setInstances] = useState(() => listConnectors());
+  const [selected, setSelected] = useState<ToolDef | null>(null);
+  const [name, setName] = useState("");
+  const [form, setForm] = useState<Record<string, string>>({});
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const allTools = useMemo(() => [...DATABASE_TOOLS, ...ETL_TOOLS], []);
+
+  function refresh() {
+    setInstances(listConnectors());
+  }
+
+  function pickTool(t: ToolDef) {
+    setSelected(t);
+    setForm(defaultsFor(t));
+    setName(`My ${t.title}`);
+    setError(null);
+    setMessage(null);
+  }
+
+  function onSubmit(e: FormEvent) {
+    e.preventDefault();
+    if (!selected) return;
+    setError(null);
+    setMessage(null);
+
+    for (const f of selected.fields) {
+      if (f.required && !(form[f.key] || "").trim()) {
+        setError(`${f.label} is required`);
+        return;
+      }
+    }
+    if (!name.trim()) {
+      setError("Display name is required");
+      return;
+    }
+
+    saveConnector({
+      kind: selected.kind,
+      tool: selected.tool,
+      name: name.trim(),
+      config: { ...form },
+      status: "connected",
+    });
+    refresh();
+    setMessage(`Connected “${name.trim()}” (${selected.title}). You can attach it on Pipelines.`);
+    setSelected(null);
+    setForm({});
+  }
+
+  function remove(c: ConnectorInstance) {
+    deleteConnector(c.id);
+    refresh();
+    setMessage(`Removed “${c.name}”.`);
+  }
+
+  const databases = instances.filter((c) => c.kind === "database");
+  const etl = instances.filter((c) => c.kind === "etl");
+
+  return (
+    <div>
+      <header className="page-header">
+        <div>
+          <h1>Connectors</h1>
+          <p>
+            First connect your databases and ETL tools. Then attach them to a pipeline as source,
+            transform, and target.
+          </p>
+        </div>
+      </header>
+
+      {error && <div className="banner error">{error}</div>}
+      {message && <div className="banner ok">{message}</div>}
+
+      <ToolSection
+        title="Databases"
+        tools={DATABASE_TOOLS}
+        selected={selected?.kind === "database" ? selected.tool : null}
+        onSelect={pickTool}
+      />
+
+      <ToolSection
+        title="ETL tools"
+        tools={ETL_TOOLS}
+        selected={selected?.kind === "etl" ? selected.tool : null}
+        onSelect={pickTool}
+      />
+
+      {selected && (
+        <form className="form-panel" onSubmit={onSubmit}>
+          <h2>Connect {selected.title}</h2>
+          <p className="muted small">
+            Credentials stay in this browser (localStorage) for the studio demo. Production should
+            use env / secrets.
+          </p>
+          <div className="form-grid">
+            <div className="field span-2">
+              <label htmlFor="conn-name">Display name</label>
+              <input
+                id="conn-name"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder={`My ${selected.title}`}
+              />
             </div>
-          </form>
-
-          <div className="panel-pad">
-            <button type="button" className="btn-link" onClick={() => setShowCsv((v) => !v)}>
-              {showCsv ? "Hide" : "Show"} CSV upload (advanced / offline)
+            {selected.fields.map((f) => (
+              <div className="field" key={f.key}>
+                <label htmlFor={f.key}>
+                  {f.label}
+                  {f.required ? " *" : ""}
+                </label>
+                <input
+                  id={f.key}
+                  type={f.type || "text"}
+                  value={form[f.key] || ""}
+                  placeholder={f.placeholder}
+                  onChange={(e) => setForm((prev) => ({ ...prev, [f.key]: e.target.value }))}
+                  autoComplete={f.type === "password" ? "off" : undefined}
+                />
+              </div>
+            ))}
+          </div>
+          <div className="btn-row" style={{ marginTop: 18 }}>
+            <button type="submit" className="btn">
+              Save connection
+            </button>
+            <button
+              type="button"
+              className="btn secondary"
+              onClick={() => {
+                setSelected(null);
+                setError(null);
+              }}
+            >
+              Cancel
             </button>
           </div>
-          {showCsv && (
-            <form className="panel-pad connector-form" onSubmit={onCsv}>
-              <label>
-                <span>CSV for {selectedTool}</span>
-                <input type="file" accept=".csv,text/csv" onChange={(e) => setCsvFile(e.target.files?.[0] ?? null)} />
-              </label>
-              <button type="submit" disabled={busy || !csvFile}>
-                Ingest CSV
-              </button>
-              {csvResult && (
-                <p className="muted">
-                  envelopes={csvResult.envelopes} ingested={csvResult.ingested} duplicates={csvResult.duplicates}
-                </p>
-              )}
-            </form>
-          )}
-        </section>
+        </form>
+      )}
 
-        <section className="panel">
-          <div className="panel-head">
-            <h2>Your connections</h2>
-          </div>
-          <table>
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Tool</th>
-                <th>Status</th>
-                <th>Last sync</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {instances.map((i) => (
-                <tr
-                  key={i.instance_id}
-                  className={editingId === i.instance_id ? "selected" : ""}
-                  style={{ cursor: "pointer" }}
-                  onClick={() => selectInstance(i)}
-                >
-                  <td>
-                    <div className="cell-title">{i.name}</div>
-                    <div className="mono muted">{i.instance_id}</div>
-                    {i.last_error ? <div className="muted">{i.last_error}</div> : null}
-                  </td>
-                  <td className="mono">{i.tool_id}</td>
-                  <td>
-                    <Status value={i.status} />
-                  </td>
-                  <td className="mono muted">{i.last_sync_at || "—"}</td>
-                  <td className="row-actions" onClick={(e) => e.stopPropagation()}>
-                    <button type="button" className="btn-link" disabled={busy} onClick={() => onTest(i.instance_id)}>
-                      Test
+      <div className="section-block" style={{ marginTop: 36 }}>
+        <p className="section-label">Your connections</p>
+        {!instances.length && (
+          <div className="empty">No connectors yet. Pick Snowflake, MySQL, or dbt above.</div>
+        )}
+
+        {!!databases.length && (
+          <>
+            <p className="muted small" style={{ marginBottom: 8 }}>
+              Databases ({databases.length})
+            </p>
+            <div className="instance-list">
+              {databases.map((c) => (
+                <div className="instance-row" key={c.id}>
+                  <div>
+                    <strong>{c.name}</strong>
+                    <span className="muted small">
+                      {" "}
+                      · {c.tool}
+                      {c.config.database ? ` · ${c.config.database}` : ""}
+                      {c.config.schema ? `.${c.config.schema}` : ""}
+                    </span>
+                  </div>
+                  <div className="btn-row">
+                    <span className={`badge ${c.status === "connected" ? "ok" : "error"}`}>
+                      {c.status}
+                    </span>
+                    <button type="button" className="btn ghost" onClick={() => remove(c)}>
+                      Remove
                     </button>
-                    <button type="button" className="btn-link" disabled={busy} onClick={() => onSync(i.instance_id)}>
-                      Sync
-                    </button>
-                  </td>
-                </tr>
+                  </div>
+                </div>
               ))}
-              {!instances.length && (
-                <tr>
-                  <td colSpan={5} className="empty">
-                    No connections yet — create one from the form.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </section>
+            </div>
+          </>
+        )}
+
+        {!!etl.length && (
+          <>
+            <p className="muted small" style={{ margin: "16px 0 8px" }}>
+              ETL ({etl.length})
+            </p>
+            <div className="instance-list">
+              {etl.map((c) => (
+                <div className="instance-row" key={c.id}>
+                  <div>
+                    <strong>{c.name}</strong>
+                    <span className="muted small">
+                      {" "}
+                      · {c.tool}
+                      {c.config.account_id ? ` · account ${c.config.account_id}` : ""}
+                    </span>
+                  </div>
+                  <div className="btn-row">
+                    <span className={`badge ${c.status === "connected" ? "ok" : "error"}`}>
+                      {c.status}
+                    </span>
+                    <button type="button" className="btn ghost" onClick={() => remove(c)}>
+                      Remove
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
       </div>
+
+      {/* keep tools list referenced for future catalog expansion */}
+      <span style={{ display: "none" }}>{allTools.length}</span>
     </div>
   );
 }

@@ -1,385 +1,406 @@
-import { useEffect, useMemo, useState } from "react";
-import { api, type Pipeline, type PipelineDashboard } from "../api/client";
-import { ErrorBanner, Loading, PageHeader, Severity, Stat, Status } from "../components/ui";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { Link } from "react-router-dom";
+import { appApi } from "../api/appApi";
+import {
+  FALLBACK_PIPELINES,
+  lineageSummary,
+  listConnectors,
+  listLocalPipelines,
+  newPipelineId,
+  saveLocalPipeline,
+  type ConnectorInstance,
+  type PipelineView,
+} from "../lib/studioStore";
 
-function formatMs(ms: number | null | undefined): string {
-  if (ms == null) return "—";
-  if (ms < 1000) return `${ms} ms`;
-  const s = ms / 1000;
-  if (s < 60) return `${s.toFixed(1)} s`;
-  return `${(s / 60).toFixed(1)} min`;
+function mergePipelines(remote: PipelineView[], local: PipelineView[]): PipelineView[] {
+  const byId = new Map<string, PipelineView>();
+  for (const p of remote) byId.set(p.pipeline_id, p);
+  for (const p of local) {
+    const existing = byId.get(p.pipeline_id);
+    byId.set(p.pipeline_id, existing ? { ...existing, ...p } : p);
+  }
+  // Prefer name uniqueness: later entries win for same name from local
+  const byName = new Map<string, PipelineView>();
+  for (const p of byId.values()) {
+    byName.set(p.pipeline_name.toLowerCase(), p);
+  }
+  return Array.from(byName.values()).sort((a, b) => {
+    if (Boolean(a.is_active) !== Boolean(b.is_active)) return a.is_active ? -1 : 1;
+    return a.pipeline_name.localeCompare(b.pipeline_name);
+  });
 }
 
-function RunBars({ executions }: { executions: PipelineDashboard["executions"] }) {
-  const pipelineRuns = useMemo(() => {
-    const runs = executions.filter((e) => !e.task_id).slice(0, 24).reverse();
-    return runs.length ? runs : executions.slice(0, 24).reverse();
-  }, [executions]);
-
-  if (!pipelineRuns.length) return <p className="muted">No run history yet.</p>;
-
-  const maxDur = Math.max(...pipelineRuns.map((e) => e.duration_ms || 1), 1);
-
-  return (
-    <div className="run-bars" title="Recent runs (left = older)">
-      {pipelineRuns.map((e, idx) => {
-        const failed = (e.status || "").toLowerCase().includes("fail");
-        const height = Math.max(12, Math.round(((e.duration_ms || maxDur * 0.3) / maxDur) * 72));
-        return (
-          <div
-            key={`${e.execution_id}-${idx}`}
-            className={`run-bar ${failed ? "bad" : "ok"}`}
-            style={{ height }}
-            title={`${e.status} · ${formatMs(e.duration_ms)} · ${e.execution_id}`}
-          />
-        );
-      })}
-    </div>
-  );
-}
-
-export function PipelinesPage({ tenantId }: { tenantId: string }) {
-  const [pipelines, setPipelines] = useState<Pipeline[]>([]);
-  const [selected, setSelected] = useState<string>("");
-  const [dash, setDash] = useState<PipelineDashboard | null>(null);
-  const [error, setError] = useState<string | null>(null);
+export function PipelinesPage() {
+  const [pipelines, setPipelines] = useState<PipelineView[]>([]);
+  const [selectedId, setSelectedId] = useState<string>("");
   const [loading, setLoading] = useState(true);
-  const [dashLoading, setDashLoading] = useState(false);
+  const [sourceNote, setSourceNote] = useState<string>("");
+  const [error, setError] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const [showCreate, setShowCreate] = useState(false);
+
+  const [name, setName] = useState("my_pipeline");
+  const [template, setTemplate] = useState<"stock_etl" | "ecommerce_etl" | "custom">("custom");
+  const [sourceId, setSourceId] = useState("");
+  const [etlId, setEtlId] = useState("");
+  const [targetId, setTargetId] = useState("");
+
+  const connectors = useMemo(() => listConnectors(), [showCreate, message]);
+  const dbConnectors = connectors.filter((c) => c.kind === "database");
+  const etlConnectors = connectors.filter((c) => c.kind === "etl");
+
+  const selected = pipelines.find((p) => p.pipeline_id === selectedId) || null;
+
+  async function load() {
+    setLoading(true);
+    setError(null);
+    const local = listLocalPipelines();
+    try {
+      const remote = await appApi.listPipelines();
+      const merged = mergePipelines(remote.length ? remote : FALLBACK_PIPELINES, local);
+      setPipelines(merged);
+      setSourceNote(
+        remote.length
+          ? `Loaded ${remote.length} pipeline(s) from ${appApi.base}`
+          : `API returned empty — showing fallback demos + local`,
+      );
+      setSelectedId((prev) => prev || merged[0]?.pipeline_id || "");
+    } catch (e) {
+      const merged = mergePipelines(FALLBACK_PIPELINES, local);
+      setPipelines(merged);
+      setSourceNote(
+        `API unreachable (${appApi.base}) — showing demo pipelines. ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      );
+      setSelectedId((prev) => prev || merged[0]?.pipeline_id || "");
+    } finally {
+      setLoading(false);
+    }
+  }
 
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      setLoading(true);
-      try {
-        const p = await api.pipelines(tenantId);
-        if (cancelled) return;
-        setPipelines(p.items);
-        setSelected((prev) => prev || p.items[0]?.pipeline_id || "");
-      } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
-      } finally {
-        if (!cancelled) setLoading(false);
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function connectorLabel(c: ConnectorInstance): string {
+    const schema = c.config.schema || c.config.database || "";
+    return `${c.name} (${c.tool}${schema ? "/" + schema : ""})`;
+  }
+
+  async function onCreate(e: FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setMessage(null);
+
+    const src = dbConnectors.find((c) => c.id === sourceId);
+    const etl = etlConnectors.find((c) => c.id === etlId);
+    const tgt = dbConnectors.find((c) => c.id === targetId);
+
+    if (template === "custom") {
+      if (!name.trim()) {
+        setError("Pipeline name is required");
+        return;
       }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [tenantId]);
-
-  useEffect(() => {
-    if (!selected) {
-      setDash(null);
+      if (!src || !etl || !tgt) {
+        setError("Pick SOURCE (database), ETL (dbt), and TARGET (database) connectors.");
+        return;
+      }
+      const pipeline: PipelineView = {
+        pipeline_id: newPipelineId(),
+        pipeline_name: name.trim(),
+        description: `${src.tool} → ${etl.tool} → ${tgt.tool}`,
+        is_active: false,
+        source: {
+          tool: src.tool,
+          schema: src.config.schema || src.config.database,
+          connector_id: src.id,
+          connector_name: src.name,
+        },
+        etl: {
+          tool: etl.tool,
+          connector_id: etl.id,
+          connector_name: etl.name,
+        },
+        target: {
+          tool: tgt.tool,
+          schema: tgt.config.schema || tgt.config.database,
+          connector_id: tgt.id,
+          connector_name: tgt.name,
+        },
+        source_local: true,
+      };
+      saveLocalPipeline(pipeline);
+      setMessage(`Saved local pipeline “${pipeline.pipeline_name}”.`);
+      setShowCreate(false);
+      await load();
+      setSelectedId(pipeline.pipeline_id);
       return;
     }
-    let cancelled = false;
-    (async () => {
-      setDashLoading(true);
-      setError(null);
-      try {
-        const d = await api.pipelineDashboard(tenantId, selected);
-        if (!cancelled) setDash(d);
-      } catch (err) {
-        if (!cancelled) {
-          setDash(null);
-          setError(err instanceof Error ? err.message : String(err));
-        }
-      } finally {
-        if (!cancelled) setDashLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [tenantId, selected]);
 
-  if (loading) return <Loading />;
-
-  const m = dash?.metrics;
+    // Known templates → try app API, always keep a local attach view
+    try {
+      const res = await appApi.createPipeline({
+        pipeline_name: template,
+        make_active: template === "stock_etl",
+      });
+      const srcC = dbConnectors[0];
+      const etlC = etlConnectors[0];
+      const tgtC = dbConnectors[1] || dbConnectors[0];
+      const pipeline: PipelineView = {
+        pipeline_id: String(res.pipeline_id || newPipelineId()),
+        pipeline_name: template,
+        description:
+          template === "stock_etl"
+            ? "Snowflake RAW → dbt → STAGING_STAGING"
+            : "Snowflake SRC_DATA → dbt → CLEAN_DATA",
+        is_active: template === "stock_etl",
+        source: {
+          tool: "snowflake",
+          schema: template === "stock_etl" ? "RAW" : "SRC_DATA",
+          connector_id: srcC?.id,
+          connector_name: srcC?.name,
+        },
+        etl: {
+          tool: "dbt",
+          connector_id: etlC?.id,
+          connector_name: etlC?.name,
+        },
+        target: {
+          tool: "snowflake",
+          schema: template === "stock_etl" ? "STAGING_STAGING" : "CLEAN_DATA",
+          connector_id: tgtC?.id,
+          connector_name: tgtC?.name,
+        },
+      };
+      saveLocalPipeline(pipeline);
+      setMessage(`Registered “${template}” via API.`);
+    } catch (err) {
+      const pipeline: PipelineView = {
+        pipeline_id: newPipelineId(),
+        pipeline_name: template,
+        description: "Saved locally (API create failed)",
+        is_active: false,
+        source: { tool: "snowflake", schema: template === "stock_etl" ? "RAW" : "SRC_DATA" },
+        etl: { tool: "dbt" },
+        target: {
+          tool: "snowflake",
+          schema: template === "stock_etl" ? "STAGING_STAGING" : "CLEAN_DATA",
+        },
+        source_local: true,
+      };
+      saveLocalPipeline(pipeline);
+      setMessage(
+        `API create failed — saved “${template}” locally. ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+    setShowCreate(false);
+    await load();
+  }
 
   return (
     <div>
-      <PageHeader
-        title="Pipelines"
-        subtitle="Select a pipeline for a full reliability dashboard: success rate, duration, tasks, incidents, and lineage."
-      />
-      <ErrorBanner error={error} />
+      <header className="page-header">
+        <div>
+          <h1>Pipelines</h1>
+          <p>
+            Each pipeline attaches a source database, an ETL tool, and a target database.
+          </p>
+        </div>
+        <div className="btn-row">
+          <button type="button" className="btn secondary" onClick={() => void load()}>
+            Refresh
+          </button>
+          <button type="button" className="btn" onClick={() => setShowCreate((v) => !v)}>
+            {showCreate ? "Close" : "New pipeline"}
+          </button>
+        </div>
+      </header>
 
-      <div className="pipeline-layout">
-        <section className="panel pipeline-list">
-          <div className="panel-head">
-            <h2>All pipelines</h2>
+      {sourceNote && <div className="banner info">{sourceNote}</div>}
+      {error && <div className="banner error">{error}</div>}
+      {message && <div className="banner ok">{message}</div>}
+
+      {showCreate && (
+        <form className="form-panel" onSubmit={onCreate}>
+          <h2>New pipeline</h2>
+          <p className="muted small">
+            Use a known template (registers in Metadata MySQL) or build a custom attach from your{" "}
+            <Link to="/connectors">connectors</Link>.
+          </p>
+          <div className="form-grid">
+            <div className="field">
+              <label htmlFor="tpl">Template</label>
+              <select
+                id="tpl"
+                value={template}
+                onChange={(e) =>
+                  setTemplate(e.target.value as "stock_etl" | "ecommerce_etl" | "custom")
+                }
+              >
+                <option value="custom">Custom (from connectors)</option>
+                <option value="stock_etl">stock_etl (RAW → staging)</option>
+                <option value="ecommerce_etl">ecommerce_etl (SRC_DATA → CLEAN_DATA)</option>
+              </select>
+            </div>
+            {template === "custom" && (
+              <>
+                <div className="field">
+                  <label htmlFor="pname">Pipeline name</label>
+                  <input
+                    id="pname"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    placeholder="orders_etl"
+                  />
+                </div>
+                <div className="field">
+                  <label htmlFor="src">SOURCE database</label>
+                  <select id="src" value={sourceId} onChange={(e) => setSourceId(e.target.value)}>
+                    <option value="">Select…</option>
+                    {dbConnectors.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {connectorLabel(c)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="field">
+                  <label htmlFor="etl">ETL tool</label>
+                  <select id="etl" value={etlId} onChange={(e) => setEtlId(e.target.value)}>
+                    <option value="">Select…</option>
+                    {etlConnectors.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {connectorLabel(c)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="field">
+                  <label htmlFor="tgt">TARGET database</label>
+                  <select id="tgt" value={targetId} onChange={(e) => setTargetId(e.target.value)}>
+                    <option value="">Select…</option>
+                    {dbConnectors.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {connectorLabel(c)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </>
+            )}
           </div>
-          <table>
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>Tool</th>
-                <th>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {pipelines.map((p) => (
-                <tr
-                  key={p.pipeline_id}
-                  className={selected === p.pipeline_id ? "selected" : ""}
-                  onClick={() => setSelected(p.pipeline_id)}
-                  style={{ cursor: "pointer" }}
-                >
-                  <td className="mono">{p.pipeline_id}</td>
-                  <td>{p.source_tool}</td>
-                  <td>
-                    <Status value={p.status || "unknown"} />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </section>
+          {template === "custom" && !dbConnectors.length && (
+            <p className="muted small" style={{ marginTop: 12 }}>
+              No database connectors yet.{" "}
+              <Link to="/connectors">Add Snowflake or MySQL</Link> first.
+            </p>
+          )}
+          {template === "custom" && !etlConnectors.length && (
+            <p className="muted small">
+              No ETL connectors yet. <Link to="/connectors">Add dbt Cloud</Link> first.
+            </p>
+          )}
+          <div className="btn-row" style={{ marginTop: 16 }}>
+            <button type="submit" className="btn">
+              Create
+            </button>
+          </div>
+        </form>
+      )}
 
-        <div className="pipeline-dash">
-          {!selected && <div className="empty">Select a pipeline to open its dashboard.</div>}
-          {selected && dashLoading && <Loading />}
-          {selected && dash && !dashLoading && (
-            <>
-              <section className="panel">
-                <div className="panel-head">
+      {loading ? (
+        <p className="muted">Loading pipelines…</p>
+      ) : (
+        <div className="split">
+          <div className="pipeline-list">
+            {!pipelines.length && (
+              <div className="empty">No pipelines. Create one or connect the app API.</div>
+            )}
+            {pipelines.map((p) => (
+              <div
+                key={p.pipeline_id}
+                className={`pipeline-card ${selectedId === p.pipeline_id ? "selected" : ""}`}
+                onClick={() => setSelectedId(p.pipeline_id)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") setSelectedId(p.pipeline_id);
+                }}
+                role="button"
+                tabIndex={0}
+              >
+                <div className="pipeline-card-top">
                   <div>
-                    <h2>{dash.pipeline.name}</h2>
-                    <p className="muted mono">
-                      {dash.pipeline.pipeline_id} · {dash.pipeline.source_tool}
+                    <h3>{p.pipeline_name}</h3>
+                    {p.description && <p className="desc">{p.description}</p>}
+                  </div>
+                  <span className={`badge ${p.is_active ? "active" : "idle"}`}>
+                    {p.is_active ? "Active" : "Idle"}
+                  </span>
+                </div>
+                <div className="lineage">
+                  <span className="chip">
+                    {p.source?.tool || "?"}
+                    {p.source?.schema ? `/${p.source.schema}` : ""}
+                  </span>
+                  <span className="arrow">→</span>
+                  <span className="chip">{p.etl?.tool || "?"}</span>
+                  <span className="arrow">→</span>
+                  <span className="chip">
+                    {p.target?.tool || "?"}
+                    {p.target?.schema ? `/${p.target.schema}` : ""}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <aside className="panel">
+            {!selected ? (
+              <p className="muted">Select a pipeline to see connector attach details.</p>
+            ) : (
+              <>
+                <h2>{selected.pipeline_name}</h2>
+                <p className="muted small">{lineageSummary(selected)}</p>
+                <p className="muted small" style={{ marginTop: 8 }}>
+                  ID: {selected.pipeline_id}
+                </p>
+                <div className="attach-grid" style={{ marginTop: 16 }}>
+                  <div className="attach-box">
+                    <h4>Source</h4>
+                    <strong>
+                      {selected.source?.tool}
+                      {selected.source?.schema ? ` / ${selected.source.schema}` : ""}
+                    </strong>
+                    <p className="muted small">
+                      {selected.source?.connector_name || "Database connector"}
                     </p>
                   </div>
-                  <Status value={dash.pipeline.status || "unknown"} />
-                </div>
-                <div className="stats">
-                  <Stat label="Total runs" value={m?.total_runs ?? 0} />
-                  <Stat
-                    label="Success rate"
-                    value={m?.success_rate_pct != null ? `${m.success_rate_pct}%` : "—"}
-                    tone={(m?.success_rate_pct ?? 100) >= 90 ? "ok" : (m?.success_rate_pct ?? 0) >= 70 ? "warn" : "bad"}
-                  />
-                  <Stat label="Failed runs" value={m?.failed ?? 0} tone={m?.failed ? "bad" : "ok"} />
-                  <Stat label="Avg duration" value={formatMs(m?.avg_duration_ms)} />
-                  <Stat label="Max duration" value={formatMs(m?.max_duration_ms)} />
-                  <Stat label="Retries" value={m?.retry_count ?? 0} tone={m?.retry_count ? "warn" : "ok"} />
-                  <Stat label="Tasks" value={m?.task_count ?? 0} />
-                  <Stat
-                    label="Open incidents"
-                    value={m?.open_incident_count ?? 0}
-                    tone={m?.open_incident_count ? "bad" : "ok"}
-                  />
-                </div>
-                <div className="panel-pad">
-                  <h3 className="section-label">Recent run durations</h3>
-                  <RunBars executions={dash.executions} />
-                </div>
-              </section>
-
-              <div className="split">
-                <section className="panel">
-                  <div className="panel-head">
-                    <h2>Task health</h2>
+                  <div className="attach-box">
+                    <h4>ETL</h4>
+                    <strong>{selected.etl?.tool || "—"}</strong>
+                    <p className="muted small">
+                      {selected.etl?.connector_name || "ETL tool connector"}
+                    </p>
                   </div>
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Task</th>
-                        <th>Runs</th>
-                        <th>OK</th>
-                        <th>Failed</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(dash.task_stats.length ? dash.task_stats : dash.tasks.map((t) => ({ task_id: t.task_id, total: 0, succeeded: 0, failed: 0 }))).map(
-                        (t) => (
-                          <tr key={t.task_id}>
-                            <td className="mono">{t.task_id}</td>
-                            <td>{t.total}</td>
-                            <td>{t.succeeded}</td>
-                            <td>
-                              <span className={t.failed ? "pill bad" : "pill ok"}>{t.failed}</span>
-                            </td>
-                          </tr>
-                        ),
-                      )}
-                      {!dash.tasks.length && !dash.task_stats.length && (
-                        <tr>
-                          <td colSpan={4} className="empty">
-                            No task-level runs yet.
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </section>
-
-                <section className="panel">
-                  <div className="panel-head">
-                    <h2>Related incidents</h2>
+                  <div className="attach-box">
+                    <h4>Target</h4>
+                    <strong>
+                      {selected.target?.tool}
+                      {selected.target?.schema ? ` / ${selected.target.schema}` : ""}
+                    </strong>
+                    <p className="muted small">
+                      {selected.target?.connector_name || "Database connector"}
+                    </p>
                   </div>
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Title</th>
-                        <th>Severity</th>
-                        <th>Status</th>
-                        <th>Blast</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {dash.incidents.map((i) => (
-                        <tr key={i.incident_key}>
-                          <td>{i.title}</td>
-                          <td>
-                            <Severity value={i.severity} />
-                          </td>
-                          <td>
-                            <Status value={i.status} />
-                          </td>
-                          <td>{i.blast_radius_count}</td>
-                        </tr>
-                      ))}
-                      {!dash.incidents.length && (
-                        <tr>
-                          <td colSpan={4} className="empty">
-                            No incidents linked to this pipeline.
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </section>
-              </div>
-
-              <div className="split">
-                <section className="panel">
-                  <div className="panel-head">
-                    <h2>Alerts</h2>
-                  </div>
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Title</th>
-                        <th>Type</th>
-                        <th>Severity</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {dash.alerts.map((a) => (
-                        <tr key={a.alert_key}>
-                          <td>{a.title}</td>
-                          <td>{a.monitor_type || "—"}</td>
-                          <td>
-                            <Severity value={a.severity} />
-                          </td>
-                        </tr>
-                      ))}
-                      {!dash.alerts.length && (
-                        <tr>
-                          <td colSpan={3} className="empty">
-                            No alerts for this pipeline.
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </section>
-
-                <section className="panel">
-                  <div className="panel-head">
-                    <h2>Related datasets / lineage</h2>
-                  </div>
-                  {dash.related_datasets.length ? (
-                    <ul className="blast-list">
-                      {dash.related_datasets.map((d) => (
-                        <li key={d} className="mono">
-                          {d}
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="empty">No lineage transform links for this pipeline yet.</p>
-                  )}
-                  {dash.lineage_edges.length > 0 && (
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>Upstream</th>
-                          <th>Downstream</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {dash.lineage_edges.map((e) => (
-                          <tr key={`${e.upstream_dataset_id}-${e.downstream_dataset_id}`}>
-                            <td className="mono">{e.upstream_dataset_id}</td>
-                            <td className="mono">{e.downstream_dataset_id}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
-                </section>
-              </div>
-
-              <section className="panel">
-                <div className="panel-head">
-                  <h2>Execution history</h2>
                 </div>
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Execution</th>
-                      <th>Task</th>
-                      <th>Status</th>
-                      <th>Attempt</th>
-                      <th>Duration</th>
-                      <th>Started</th>
-                      <th>Error</th>
-                      <th></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {dash.executions.map((e) => (
-                      <tr key={`${e.execution_id}-${e.task_id}`}>
-                        <td className="mono">{e.execution_id}</td>
-                        <td className="mono">{e.task_id || "(pipeline)"}</td>
-                        <td>
-                          <Status value={e.status} />
-                        </td>
-                        <td>{e.attempt}</td>
-                        <td>{formatMs(e.duration_ms)}</td>
-                        <td className="mono muted">{e.started_at || "—"}</td>
-                        <td className="error-cell">{e.error_message || "—"}</td>
-                        <td>
-                          {e.deep_link ? (
-                            <a
-                              className="btn-link external-link"
-                              href={e.deep_link}
-                              target="_blank"
-                              rel="noreferrer"
-                            >
-                              {e.deep_link_label || "Open in tool"} ↗
-                            </a>
-                          ) : (
-                            "—"
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                    {!dash.executions.length && (
-                      <tr>
-                        <td colSpan={8} className="empty">
-                          No executions yet.
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </section>
-            </>
-          )}
+              </>
+            )}
+          </aside>
         </div>
-      </div>
+      )}
     </div>
   );
 }

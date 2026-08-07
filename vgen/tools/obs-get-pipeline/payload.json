@@ -1,7 +1,7 @@
 {
   "context": {
     "input": {
-      "pipeline_id": "REPLACE_WITH_PIPELINE_ID"
+      "pipeline_id": "stock_etl"
     }
   }
 }

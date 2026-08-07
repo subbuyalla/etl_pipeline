@@ -2,45 +2,42 @@ import { NavLink } from "react-router-dom";
 import type { ReactNode } from "react";
 
 const links = [
-  { to: "/", label: "Overview", end: true },
-  { to: "/observability", label: "Observability" },
-  { to: "/assistants", label: "Assistants" },
-  { to: "/incidents", label: "Incidents" },
-  { to: "/pipelines", label: "Pipelines" },
-  { to: "/datasets", label: "Datasets" },
-  { to: "/monitors", label: "Monitors" },
-  { to: "/lineage", label: "Lineage" },
-  { to: "/connectors", label: "Connectors" },
+  { to: "/", label: "Pipelines", end: true },
+  { to: "/connectors", label: "Connectors", end: false },
 ];
 
 type Props = {
-  tenantId: string;
-  onTenantChange: (v: string) => void;
   children: ReactNode;
 };
 
-export function Layout({ tenantId, onTenantChange, children }: Props) {
+export function Layout({ children }: Props) {
   return (
     <div className="shell">
       <aside className="rail">
         <div className="brand">
-          <span className="brand-mark">EO</span>
+          <span className="brand-mark">ES</span>
           <div>
-            <strong>Observability</strong>
-            <p>ETL reliability</p>
+            <strong>ETL Studio</strong>
+            <p>Pipelines & connectors</p>
           </div>
         </div>
         <nav className="nav">
           {links.map((l) => (
-            <NavLink key={l.to} to={l.to} end={l.end} className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}>
+            <NavLink
+              key={l.to}
+              to={l.to}
+              end={l.end}
+              className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}
+            >
               {l.label}
             </NavLink>
           ))}
         </nav>
-        <label className="tenant">
-          <span>Tenant</span>
-          <input value={tenantId} onChange={(e) => onTenantChange(e.target.value)} />
-        </label>
+        <div className="rail-footer">
+          <p className="muted small">
+            Attach databases and ETL tools, then build pipelines: source → transform → target.
+          </p>
+        </div>
       </aside>
       <main className="main">{children}</main>
     </div>

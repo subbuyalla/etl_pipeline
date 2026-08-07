@@ -72,50 +72,111 @@ function formatDurationDisplay(seconds) {
   return h + " hours " + remM + " minutes";
 }
 
-function resolveTimeWindow(timeWindow) {
-  const raw = (timeWindow || "").toString().trim().toLowerCase();
-  if (!raw) {
+function parseRunDate(value) {
+  const raw = (value || "").toString().trim();
+  if (!raw) return null;
+  const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  const dt = new Date(Date.UTC(y, mo - 1, d));
+  if (
+    dt.getUTCFullYear() !== y ||
+    dt.getUTCMonth() !== mo - 1 ||
+    dt.getUTCDate() !== d
+  ) {
+    return null;
+  }
+  return m[1] + "-" + m[2] + "-" + m[3];
+}
+
+function resolveTimeWindow(timeWindow, runDate) {
+  const explicitDate = parseRunDate(runDate);
+  const twRaw = (timeWindow || "").toString().trim();
+  const twLower = twRaw.toLowerCase();
+  const twAsDate = parseRunDate(twRaw);
+  const date = explicitDate || twAsDate;
+
+  if (date) {
+    if (
+      explicitDate &&
+      twLower &&
+      !twAsDate &&
+      twLower !== "today" &&
+      twLower !== "yesterday" &&
+      twLower !== "last_24h" &&
+      twLower !== "last24h" &&
+      twLower !== "last_7_days" &&
+      twLower !== "last7days" &&
+      twLower !== "last_7d"
+    ) {
+      throw new Error(
+        "Use either run_date (YYYY-MM-DD) or time_window, not both with conflicting values."
+      );
+    }
+    return {
+      clause: " AND DATE(start_time) = ?",
+      clauseParams: [date],
+      window_start: date + " 00:00:00 UTC",
+      window_end: date + " 23:59:59 UTC",
+      time_window: null,
+      run_date: date,
+    };
+  }
+
+  if (!twLower) {
     return {
       clause: "",
+      clauseParams: [],
       window_start: null,
       window_end: null,
       time_window: null,
+      run_date: null,
     };
   }
-  if (raw === "today") {
+  if (twLower === "today") {
     return {
       clause: " AND DATE(start_time) = CURDATE()",
+      clauseParams: [],
       window_start: "CURDATE() 00:00:00",
       window_end: "CURDATE() + 1 day",
       time_window: "today",
+      run_date: null,
     };
   }
-  if (raw === "yesterday") {
+  if (twLower === "yesterday") {
     return {
       clause: " AND DATE(start_time) = DATE_SUB(CURDATE(), INTERVAL 1 DAY)",
+      clauseParams: [],
       window_start: "yesterday 00:00:00",
       window_end: "today 00:00:00",
       time_window: "yesterday",
+      run_date: null,
     };
   }
-  if (raw === "last_24h" || raw === "last24h") {
+  if (twLower === "last_24h" || twLower === "last24h") {
     return {
       clause: " AND start_time >= (UTC_TIMESTAMP() - INTERVAL 24 HOUR)",
+      clauseParams: [],
       window_start: "UTC_TIMESTAMP() - 24h",
       window_end: "UTC_TIMESTAMP()",
       time_window: "last_24h",
+      run_date: null,
     };
   }
-  if (raw === "last_7_days" || raw === "last7days" || raw === "last_7d") {
+  if (twLower === "last_7_days" || twLower === "last7days" || twLower === "last_7d") {
     return {
       clause: " AND start_time >= (UTC_TIMESTAMP() - INTERVAL 7 DAY)",
+      clauseParams: [],
       window_start: "UTC_TIMESTAMP() - 7d",
       window_end: "UTC_TIMESTAMP()",
       time_window: "last_7_days",
+      run_date: null,
     };
   }
   throw new Error(
-    "Unsupported time_window. Use: today, yesterday, last_24h, last_7_days, or omit."
+    "Unsupported time filter. Use run_date (YYYY-MM-DD), time_window (today|yesterday|last_24h|last_7_days), or pass YYYY-MM-DD as time_window."
   );
 }
 
@@ -252,13 +313,14 @@ async function handler(event) {
     );
     const server_now =
       nowRows && nowRows[0] ? nowRows[0].server_now : null;
-    const window = resolveTimeWindow(input.time_window);
+    const window = resolveTimeWindow(input.time_window, input.run_date);
 
     const params = [pipelineId];
     let sql =
       "SELECT id, pipeline_id, pipeline_name, status, " +
       "start_time, end_time, duration, " +
       "tool_name, rows_read, rows_written, rows_added, " +
+      "failure_stage, failed_node, " +
       "LEFT(error_message, 500) AS error_message, " +
       "triggered_by FROM obs_pipeline_runs WHERE pipeline_id = ?";
 
@@ -267,6 +329,9 @@ async function handler(event) {
       params.push(status);
     }
     sql += window.clause;
+    if (window.clauseParams && window.clauseParams.length) {
+      params.push.apply(params, window.clauseParams);
+    }
     sql += " ORDER BY start_time DESC LIMIT " + limit;
 
     const rows = await runMysqlQuery(sql, params);
@@ -285,6 +350,8 @@ async function handler(event) {
         rows_read: r.rows_read,
         rows_written: r.rows_written,
         rows_added: r.rows_added,
+        failure_stage: r.failure_stage,
+        failed_node: r.failed_node,
         error_message: r.error_message,
         triggered_by: r.triggered_by,
       };
@@ -296,6 +363,7 @@ async function handler(event) {
         server_now: server_now,
         timezone: "UTC",
         time_window: window.time_window,
+        run_date: window.run_date,
         window_start: window.window_start,
         window_end: window.window_end,
         pipeline_id: pipelineId,

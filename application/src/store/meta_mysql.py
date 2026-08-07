@@ -93,6 +93,24 @@ def ensure_tables(conn) -> None:
             )
         except Exception:
             pass
+        try:
+            cur.execute(
+                "ALTER TABLE obs_pipeline_runs ADD COLUMN failure_stage VARCHAR(32) NULL"
+            )
+        except Exception:
+            pass
+        try:
+            cur.execute(
+                "ALTER TABLE obs_pipeline_runs ADD COLUMN failed_node VARCHAR(512) NULL"
+            )
+        except Exception:
+            pass
+        try:
+            cur.execute(
+                "ALTER TABLE obs_pipeline_runs ADD COLUMN failed_message TEXT NULL"
+            )
+        except Exception:
+            pass
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS obs_pipeline_runs (
@@ -107,6 +125,9 @@ def ensure_tables(conn) -> None:
               rows_read BIGINT NULL,
               rows_written BIGINT NULL,
               rows_added BIGINT NULL,
+              failure_stage VARCHAR(32) NULL,
+              failed_node VARCHAR(512) NULL,
+              failed_message TEXT NULL,
               error_message TEXT NULL,
               raw_log LONGTEXT NULL,
               execution_mode VARCHAR(64) NULL,
@@ -478,13 +499,17 @@ def store_run(conn, run_log: dict) -> None:
             """
             INSERT INTO obs_pipeline_runs (
               id, pipeline_id, pipeline_name, status, start_time, end_time, duration,
-              tool_name, rows_read, rows_written, rows_added, error_message, raw_log,
+              tool_name, rows_read, rows_written, rows_added,
+              failure_stage, failed_node, failed_message,
+              error_message, raw_log,
               execution_mode, triggered_by, orchestrator_tool,
               orchestrator_dag_id, orchestrator_task_id, orchestrator_run_id,
               tenant_id, connector_instance_id
             ) VALUES (
               %s,%s,%s,%s,%s,%s,%s,
-              %s,%s,%s,%s,%s,%s,
+              %s,%s,%s,%s,
+              %s,%s,%s,
+              %s,%s,
               %s,%s,%s,
               %s,%s,%s,
               %s,%s
@@ -498,7 +523,10 @@ def store_run(conn, run_log: dict) -> None:
               raw_log=VALUES(raw_log),
               rows_read=VALUES(rows_read),
               rows_written=VALUES(rows_written),
-              rows_added=VALUES(rows_added)
+              rows_added=VALUES(rows_added),
+              failure_stage=VALUES(failure_stage),
+              failed_node=VALUES(failed_node),
+              failed_message=VALUES(failed_message)
             """,
             (
                 str(run_log.get("id") or ""),
@@ -512,6 +540,9 @@ def store_run(conn, run_log: dict) -> None:
                 run_log.get("rows_read"),
                 run_log.get("rows_written"),
                 run_log.get("rows_added"),
+                run_log.get("failure_stage"),
+                run_log.get("failed_node"),
+                run_log.get("failed_message"),
                 run_log.get("error_message"),
                 run_log.get("raw_log"),
                 run_log.get("execution_mode"),

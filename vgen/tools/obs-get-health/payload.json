@@ -3,7 +3,6 @@
     "input": {
       "pipeline_id": "stock_etl",
       "sla_hours": 24,
-      "time_window": "today",
       "lookback_runs": 10
     }
   }

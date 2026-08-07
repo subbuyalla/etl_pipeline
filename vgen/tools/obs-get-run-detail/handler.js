@@ -138,6 +138,7 @@ async function handler(event) {
       "SELECT id, pipeline_id, pipeline_name, status, " +
         "start_time, end_time, duration, " +
         "tool_name, rows_read, rows_written, rows_added, " +
+        "failure_stage, failed_node, failed_message, " +
         "error_message, triggered_by, execution_mode " +
         "FROM obs_pipeline_runs WHERE id = ? LIMIT 1",
       [runId]
@@ -211,6 +212,11 @@ async function handler(event) {
           rows_read: r.rows_read,
           rows_written: r.rows_written,
           rows_added: r.rows_added,
+          failure_stage: r.failure_stage,
+          failed_node: r.failed_node,
+          failed_message: r.failed_message
+            ? String(r.failed_message).slice(0, 1000)
+            : null,
           error_message: r.error_message,
           triggered_by: r.triggered_by,
           execution_mode: r.execution_mode,
@@ -219,7 +225,7 @@ async function handler(event) {
         lineage_hint: lineage_hint,
       },
       agentResponseContext:
-        "Lead with status and error_message. Quote duration_display (SECONDS from duration_seconds). Include rows_added. Then SOURCE vs TARGET row counts. Never invent times.",
+        "Lead with status. If failed: quote failure_stage (source|etl|target|unknown), failed_node, and error_message/failed_message. Include duration_display and rows_added. Then SOURCE vs TARGET row counts. Never invent failure location.",
     });
   } catch (error) {
     console.error("obs-get-run-detail error:", error);

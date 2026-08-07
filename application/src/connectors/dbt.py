@@ -73,29 +73,44 @@ class DbtConnector:
     def _row_counts_from_artifact(self, run_id: str) -> dict:
         """
         From run_results.json artifact, sum adapter rows_affected.
-        Also collect relation_name list for later Snowflake enrichment.
+        Also collect relation_name list and first failed node for RCA.
         """
         data = self._get_optional(
             f"/accounts/{self.account_id}/runs/{run_id}/artifacts/run_results.json"
         )
+        empty = {
+            "rows_read": None,
+            "rows_written": None,
+            "node_count": None,
+            "relations": [],
+            "rows_from": None,
+            "failed_node": None,
+            "failed_message": None,
+            "failure_stage": None,
+        }
         if not isinstance(data, dict):
-            return {
-                "rows_read": None,
-                "rows_written": None,
-                "node_count": None,
-                "relations": [],
-                "rows_from": None,
-            }
+            return empty
 
         total = 0
         found = False
         relations: list[str] = []
+        failed_node = None
+        failed_message = None
+
         for result in data.get("results") or []:
             if not isinstance(result, dict):
                 continue
             rel = result.get("relation_name")
             if rel:
                 relations.append(str(rel))
+
+            unique_id = result.get("unique_id") or result.get("node")
+            status = str(result.get("status") or "").lower()
+            msg = result.get("message") or result.get("error") or ""
+            if status in {"error", "fail", "failed"} and failed_node is None:
+                failed_node = str(unique_id or rel or "unknown_node")
+                failed_message = str(msg)[:2000] if msg else None
+
             adapter = result.get("adapter_response") or {}
             rows = None
             if isinstance(adapter, dict):
@@ -108,6 +123,8 @@ class DbtConnector:
                 total += int(rows)
                 found = True
 
+        failure_stage = "etl" if failed_node else None
+
         if not found:
             return {
                 "rows_read": None,
@@ -115,6 +132,9 @@ class DbtConnector:
                 "node_count": len(data.get("results") or []),
                 "relations": relations,
                 "rows_from": None,
+                "failed_node": failed_node,
+                "failed_message": failed_message,
+                "failure_stage": failure_stage,
             }
         return {
             "rows_read": total,
@@ -122,12 +142,61 @@ class DbtConnector:
             "node_count": len(data.get("results") or []),
             "relations": relations,
             "rows_from": "dbt_run_results_artifact",
+            "failed_node": failed_node,
+            "failed_message": failed_message,
+            "failure_stage": failure_stage,
         }
+
+    @staticmethod
+    def _infer_failure_stage(
+        *,
+        status: str,
+        error_message: str | None,
+        failed_node: str | None,
+        artifact_stage: str | None,
+    ) -> str | None:
+        """Classify failure location for assistant RCA (best-effort)."""
+        if status != "failed":
+            return None
+        if artifact_stage:
+            return artifact_stage
+        if failed_node:
+            return "etl"
+        text = (error_message or "").lower()
+        if any(
+            k in text
+            for k in (
+                "compilation error",
+                "database error in model",
+                "runtime error",
+                "dbt",
+                "model.",
+                "snapshot.",
+                "test.",
+            )
+        ):
+            return "etl"
+        if any(
+            k in text
+            for k in (
+                "does not exist or not authorized",
+                "object does not exist",
+                "schema",
+                "relation",
+                "warehouse",
+                "snowflake",
+            )
+        ):
+            # Often target write / warehouse — still usually surfaced via dbt
+            return "target"
+        if any(k in text for k in ("connection", "timeout", "network", "unreachable")):
+            return "unknown"
+        return "etl"
 
     def _fetch_runs(self, *, limit: int = 10) -> list[dict]:
         """
         Pull recent dbt Cloud job runs (metadata/logs, not business data).
-        Enriches with rows_read/rows_written from run_results.json when available.
+        Enriches with rows_read/rows_written and failure node from run_results.json.
         """
         if not self.account_id:
             raise ValueError("account_id is required")
@@ -155,6 +224,21 @@ class DbtConnector:
             run_id = str(run.get("id"))
             counts = self._row_counts_from_artifact(run_id)
             relations = counts.pop("relations", [])
+            error_message = run.get("status_message")
+            failed_node = counts.get("failed_node")
+            failed_message = counts.get("failed_message")
+            # Prefer node-level message when present
+            if failed_message and (
+                not error_message or len(str(failed_message)) > len(str(error_message))
+            ):
+                error_message = failed_message
+
+            failure_stage = self._infer_failure_stage(
+                status=status,
+                error_message=error_message,
+                failed_node=failed_node,
+                artifact_stage=counts.get("failure_stage"),
+            )
 
             rows.append(
                 {
@@ -165,12 +249,15 @@ class DbtConnector:
                     "status_code": status_code,
                     "started_at": run.get("started_at"),
                     "finished_at": run.get("finished_at"),
-                    "error_message": run.get("status_message"),
+                    "error_message": error_message,
                     "rows_read": counts.get("rows_read"),
                     "rows_written": counts.get("rows_written"),
                     "node_count": counts.get("node_count"),
                     "relations": relations,
                     "rows_from": counts.get("rows_from"),
+                    "failed_node": failed_node,
+                    "failed_message": failed_message,
+                    "failure_stage": failure_stage,
                 }
             )
         return rows
@@ -200,6 +287,9 @@ class DbtConnector:
                         "node_count": row.get("node_count"),
                         "relations": row.get("relations") or [],
                         "rows_from": row.get("rows_from"),
+                        "failed_node": row.get("failed_node"),
+                        "failed_message": row.get("failed_message"),
+                        "failure_stage": row.get("failure_stage"),
                     },
                 }
             )

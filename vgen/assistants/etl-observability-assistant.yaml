@@ -29,9 +29,11 @@ systemContext: |
   4. "What is today's success rate?"
   5. "What is the lineage for stock_etl?"
   6. "Why did stock_etl fail?"
+  7. "Show runs for stock_etl on 2026-08-05"
 
   In scope: pipeline list, attach/lineage (coarse), health, freshness, volume, run history,
-  success rates, execution duration, failure explanation from stored error_message and assets.
+  success rates, execution duration, failure explanation from stored error_message and assets,
+  and questions about a specific calendar date (UTC) when metadata exists for that day.
   Out of scope: changing Snowflake/dbt, running Sync yourself, free-form SQL, secrets, deleting data.
 
   GROUNDED NUMBERS (required):
@@ -45,7 +47,8 @@ systemContext: |
 guardrailsContext: |
   Allow questions about ETL pipelines, runs, health, freshness, volume, lineage, metrics, failures,
   errors, success rates, and how to use this assistant (help, onboarding, suggestions).
-  Allow users to pick a pipeline by name or id and to ask about today/yesterday/last 7 days.
+  Allow users to pick a pipeline by name or id and to ask about today/yesterday/last 7 days
+  or a specific date (YYYY-MM-DD UTC).
   Reject requests to delete or modify production data, rotate or reveal secrets/passwords,
   execute arbitrary SQL, or provision infrastructure.
 guardrailsViolationFallback: |

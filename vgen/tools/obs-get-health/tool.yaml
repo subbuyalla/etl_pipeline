@@ -9,8 +9,10 @@ output_modes:
 systemInstructions:
 - Primary tool for is-it-healthy, freshness, volume, success rate, and coarse lineage questions.
 - Accepts pipeline_id as UUID OR pipeline name (e.g. stock_etl). pipeline_name also works.
+- 'Optional run_date (YYYY-MM-DD UTC) or YYYY-MM-DD as time_window for metrics on a specific day.'
 - Freshness and windows use MySQL UTC_TIMESTAMP — quote server_now in the answer.
 - rows_added on latest_run = net new target rows vs previous run (0 = no table growth).
+- latest_run is always the most recent run overall, even when time_window filters metrics.
 - avg_duration_seconds / duration_seconds are SECONDS. Also returns avg_duration_display — agents must quote these, never invent minutes.
 - Do not invent metrics; only report numbers returned here.
 arguments:
@@ -26,17 +28,22 @@ arguments:
     description: Optional pipeline name if not using pipeline_id (e.g. stock_etl)
     required: false
     type: string
+  run_date:
+    description: Optional calendar date (YYYY-MM-DD UTC) for success-rate / runs_in_scope on that day
+    required: false
+    type: string
   sla_hours:
     description: Max allowed freshness lag in hours (default 24)
     required: false
     type: number
   time_window:
-    description: 'Metrics window: today | yesterday | last_24h | last_7_days | omit for last 10 runs'
+    description: 'Metrics window: today | yesterday | last_24h | last_7_days | YYYY-MM-DD | omit for last 10 runs'
     required: false
     type: string
 examples:
 - Is stock_etl healthy?
 - What is today's success rate?
+- What was stock_etl health on 2026-08-05?
 tags:
 - etl
 - observability

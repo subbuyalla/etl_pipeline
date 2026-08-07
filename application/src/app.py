@@ -21,6 +21,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -43,6 +44,15 @@ app = FastAPI(
     title="ETL Observability App API",
     description="Pipeline attach stored in MySQL; webhook Sync loads active or named pipeline",
     version="0.4.1",
+)
+
+# Allow local Vite UI (and similar) to call this API from another origin
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -150,6 +160,7 @@ def health() -> dict:
             "examples": [
                 "/webhooks/dbt/stock_etl",
                 "/webhooks/dbt/ecommerce_etl",
+                "/webhooks/dbt/hr_etl",
             ],
         },
         "active_pipeline": {
@@ -190,6 +201,7 @@ def create_pipeline(body: CreatePipelineRequest | None = None) -> dict:
     Templates:
       stock_etl      — ANALYTICS_DB.RAW -> dbt -> STAGING_STAGING
       ecommerce_etl  — ECOMMERCE.SRC_DATA -> dbt (eg250) -> CLEAN_DATA
+      hr_etl         — HR_ANALYTICS.RAW_DATA -> dbt (eg250) -> FINAL_DATA
     """
     body = body or CreatePipelineRequest()
     pipeline_id = (body.pipeline_id or "").strip() or new_pipeline_id()
@@ -248,7 +260,8 @@ def dbt_webhook_for_pipeline(pipeline_name: str, payload: dict) -> dict:
     dbt Cloud webhook for one named pipeline.
 
     Examples:
-      http://18.61.29.231:1111/webhooks/dbt/ecommerce_etl
       http://18.61.29.231:1111/webhooks/dbt/stock_etl
+      http://18.61.29.231:1111/webhooks/dbt/ecommerce_etl
+      http://18.61.29.231:1111/webhooks/dbt/hr_etl
     """
     return _handle_dbt_webhook(payload, pipeline_name=pipeline_name)

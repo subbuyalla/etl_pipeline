@@ -8,8 +8,9 @@ output_modes:
 - application/json
 systemInstructions:
 - Use for run history, today's failures, or finding the latest failed run_id for RCA.
-- Requires pipeline_id. Optional status (success|failed|running|unknown). Optional time_window (today|yesterday|last_24h|last_7_days).
-- time_window is resolved by MySQL clock — never invent calendar dates yourself.
+- Requires pipeline_id. Optional status (success|failed|running|unknown). Optional time_window (today|yesterday|last_24h|last_7_days) OR run_date (YYYY-MM-DD).
+- 'For a specific calendar day pass run_date=YYYY-MM-DD (UTC date of start_time). You may also pass YYYY-MM-DD as time_window.'
+- time_window relative values use MySQL UTC clock — quote server_now in answers.
 - Response includes server_now, window metadata, rows_added, duration_seconds + duration_display (SECONDS), and shortened error_message.
 arguments:
   limit:
@@ -24,16 +25,21 @@ arguments:
     description: Optional pipeline name if not using pipeline_id
     required: false
     type: string
+  run_date:
+    description: Optional calendar date (YYYY-MM-DD UTC) — runs whose start_time falls on that UTC day
+    required: false
+    type: string
   status:
     description: Optional status filter (success, failed, running, unknown)
     required: false
     type: string
   time_window:
-    description: today | yesterday | last_24h | last_7_days — omit for latest N runs
+    description: today | yesterday | last_24h | last_7_days | YYYY-MM-DD — omit for latest N runs
     required: false
     type: string
 examples:
 - Show today's failures for stock_etl
+- List runs for stock_etl on 2026-08-05
 - List recent runs
 tags:
 - etl

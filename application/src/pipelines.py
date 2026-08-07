@@ -137,9 +137,80 @@ def get_ecommerce_etl_pipeline(*, pipeline_id: str | None = None) -> dict[str, A
     }
 
 
+# HR Analytics: Snowflake RAW_DATA -> dbt (eg250) -> Snowflake FINAL_DATA
+HR_ETL: dict[str, Any] = {
+    "pipeline_name": "hr_etl",
+    "tenant_id": "demo",
+    "description": (
+        "Snowflake HR_ANALYTICS.RAW_DATA.RAW_EMPLOYEES -> dbt Cloud -> "
+        "HR_ANALYTICS.FINAL_DATA.DIM_EMPLOYEES"
+    ),
+    "source": {
+        "tool": "snowflake",
+        "connector_instance_id": "sf-hr-source",
+        "role": "SOURCE",
+        "account_id": os.getenv(
+            "HR_SNOWFLAKE_ACCOUNT",
+            os.getenv("SNOWFLAKE_ACCOUNT", "jd97000.ap-southeast-7.aws"),
+        ),
+        "user_id": os.getenv(
+            "HR_SNOWFLAKE_USER", os.getenv("SNOWFLAKE_USER", "Sasi9392")
+        ),
+        "warehouse_id": os.getenv("HR_SNOWFLAKE_WAREHOUSE", "HR_ANALYTICS_WH"),
+        "database_id": os.getenv("HR_SNOWFLAKE_DATABASE", "HR_ANALYTICS"),
+        "schema": os.getenv("HR_SF_SOURCE_SCHEMA", "RAW_DATA"),
+        "sf_role": os.getenv(
+            "HR_SNOWFLAKE_ROLE", os.getenv("SNOWFLAKE_ROLE", "ACCOUNTADMIN")
+        ),
+    },
+    "etl": {
+        "tool": "dbt",
+        "connector_instance_id": "dbt-hr-job",
+        "account_id": os.getenv("HR_DBT_ACCOUNT_ID", "70506183153835"),
+        # "Pipeline ID" from UI mapped to project_id
+        "project_id": os.getenv("HR_DBT_PROJECT_ID", "70506183136587"),
+        "job_id": os.getenv("HR_DBT_JOB_ID", ""),
+        "project_name": os.getenv("HR_DBT_PROJECT_NAME", "hr_analytics"),
+        "api_base": os.getenv(
+            "HR_DBT_API_BASE", "https://eg250.us1.dbt.com/api/v2"
+        ),
+        "api_token_env": "HR_DBT_CLOUD_API_TOKEN",
+    },
+    "target": {
+        "tool": "snowflake",
+        "connector_instance_id": "sf-hr-target",
+        "role": "TARGET",
+        "account_id": os.getenv(
+            "HR_SNOWFLAKE_ACCOUNT",
+            os.getenv("SNOWFLAKE_ACCOUNT", "jd97000.ap-southeast-7.aws"),
+        ),
+        "user_id": os.getenv(
+            "HR_SNOWFLAKE_USER", os.getenv("SNOWFLAKE_USER", "Sasi9392")
+        ),
+        "warehouse_id": os.getenv("HR_SNOWFLAKE_WAREHOUSE", "HR_ANALYTICS_WH"),
+        "database_id": os.getenv("HR_SNOWFLAKE_DATABASE", "HR_ANALYTICS"),
+        "schema": os.getenv("HR_SF_TARGET_SCHEMA", "FINAL_DATA"),
+        "sf_role": os.getenv(
+            "HR_SNOWFLAKE_ROLE", os.getenv("SNOWFLAKE_ROLE", "ACCOUNTADMIN")
+        ),
+    },
+}
+
+
+def get_hr_etl_pipeline(*, pipeline_id: str | None = None) -> dict[str, Any]:
+    """Return the hr_etl pipeline (RAW_DATA -> dbt -> FINAL_DATA)."""
+    pid = (pipeline_id or "").strip() or new_pipeline_id()
+    return {
+        "pipeline_id": pid,
+        **HR_ETL,
+        "pipeline_name": os.getenv("HR_PIPELINE_NAME", HR_ETL["pipeline_name"]),
+    }
+
+
 _TEMPLATE_BUILDERS: dict[str, Callable[..., dict[str, Any]]] = {
     "stock_etl": get_stock_etl_pipeline,
     "ecommerce_etl": get_ecommerce_etl_pipeline,
+    "hr_etl": get_hr_etl_pipeline,
 }
 
 

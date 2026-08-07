@@ -8,8 +8,8 @@ output_modes:
 - application/json
 systemInstructions:
 - Use for root-cause analysis after you have a run_id (often from obs-list-runs with status=failed).
-- Returns the run row (including error_message, rows_added) and SOURCE/TARGET assets with row_count and last_updated_at.
-- Explain failures using error_message and asset context. Do not invent fixes that are not grounded in this data.
+- 'Returns the run row (error_message, failure_stage, failed_node, rows_added) and SOURCE/TARGET assets.'
+- 'For failures: lead with failure_stage + failed_node + error_message. Do not invent location.'
 arguments:
   run_id:
     description: Run id (obs_pipeline_runs.id — usually the dbt run id)
