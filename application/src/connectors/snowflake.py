@@ -1,8 +1,6 @@
 # this is the class for snowflake connector
 from typing import Any, Iterator, Optional
 import os
-import snowflake
-import snowflake.connector
 
 
 class SnowflakeConnector:
@@ -39,6 +37,8 @@ class SnowflakeConnector:
 
     def _connect(self):
         """connect to snowflake"""
+        import snowflake.connector
+
         if not self.password:
             raise RuntimeError("Missing SNOWFLAKE_PASSWORD")
 

@@ -1,10 +1,9 @@
-# Vercel / local shared deps for the ETL Observability App API
-# Keep in sync with application/requirements.txt
-
+# Vercel serverless deps (keep lean — Sync/Snowflake stays on Docker if needed)
 fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 python-dotenv>=1.0.0
 pymysql>=1.1.0
 pydantic>=2.0.0
-snowflake-connector-python>=3.12.0
 requests>=2.32.0
+# Optional on Vercel (large). Docker/local Sync should use application/requirements.txt
+# snowflake-connector-python>=3.12.0

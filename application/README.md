@@ -36,10 +36,16 @@ After deploy, open:
 - `https://<deployment>/health`
 - `https://<deployment>/docs`
 
-If you see Vercel `404: NOT_FOUND` (with an ID like `bom1::...`), the FastAPI
-function was not attached. Confirm **Root Directory** in Vercel is `.` (repo root),
-Framework is not forced to Vite/Next, and redeploy after `app.py` + `pyproject.toml`
-are on `main`.
+### Fix Vercel 404 / wrong framework
+
+If the site shows a Next.js page or `404: NOT_FOUND`:
+
+1. Vercel Project → **Settings → General → Framework Preset** = **Other** (not Next.js/Vite)
+2. **Root Directory** = empty (repo root)
+3. Redeploy **Production** from latest `main`
+4. Disable **Deployment Protection** on Production if `/docs` asks you to log in to Vercel
+
+`vercel.json` forces `@vercel/python` with a catch-all route to `app.py`.
 
 ### Environment variables (Vercel project settings)
 
