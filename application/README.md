@@ -21,14 +21,25 @@ docker run --rm -p 8002:8002 --env-file .env etl-obs-api
 
 ## Deploy to Vercel
 
-The repo root is the Vercel project. Entry point: [`api/index.py`](../api/index.py)
-(rewrites in [`vercel.json`](../vercel.json)).
+The repo root is the Vercel project. Entrypoint: [`app.py`](../app.py)
+(config in [`vercel.json`](../vercel.json) + [`pyproject.toml`](../pyproject.toml)).
 
 ```bash
 cd "d:\etl pipeline"
 npx vercel          # preview
 npx vercel --prod   # production
 ```
+
+After deploy, open:
+
+- `https://<deployment>/` — service probe
+- `https://<deployment>/health`
+- `https://<deployment>/docs`
+
+If you see Vercel `404: NOT_FOUND` (with an ID like `bom1::...`), the FastAPI
+function was not attached. Confirm **Root Directory** in Vercel is `.` (repo root),
+Framework is not forced to Vite/Next, and redeploy after `app.py` + `pyproject.toml`
+are on `main`.
 
 ### Environment variables (Vercel project settings)
 

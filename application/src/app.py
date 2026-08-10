@@ -60,6 +60,16 @@ app.add_middleware(
 )
 
 
+@app.get("/")
+def root() -> dict[str, str]:
+    """Root probe for Vercel / load balancers."""
+    return {
+        "service": "etl-observability-api",
+        "docs": "/docs",
+        "health": "/health",
+    }
+
+
 class SyncRequest(BaseModel):
     pipeline_id: str | None = None
     pipeline_name: str | None = None

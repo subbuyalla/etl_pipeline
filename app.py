@@ -1,5 +1,7 @@
 """
-Vercel ASGI entry (legacy api/ path). Prefer root app.py for FastAPI detection.
+Vercel FastAPI entrypoint (supported root name: app.py).
+
+Re-exports the Metadata API FastAPI instance as `app`.
 """
 
 from __future__ import annotations
@@ -7,7 +9,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-_ROOT = Path(__file__).resolve().parents[1]
+_ROOT = Path(__file__).resolve().parent
 _root_str = str(_ROOT)
 if _root_str not in sys.path:
     sys.path.insert(0, _root_str)
