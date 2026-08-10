@@ -17,8 +17,7 @@ const DB_USER =
   (typeof process !== "undefined" && process.env && process.env.DB_USER) ||
   "admin";
 const DB_PASSWORD =
-  (typeof process !== "undefined" && process.env && process.env.DB_PASSWORD) ||
-  "";
+  (typeof process !== "undefined" && process.env && process.env.DB_PASSWORD) || "";
 const DB_NAME =
   (typeof process !== "undefined" && process.env && process.env.DB_NAME) ||
   "metadata";
@@ -70,6 +69,53 @@ function formatDurationDisplay(seconds) {
   const h = Math.floor(m / 60);
   const remM = m % 60;
   return h + " hours " + remM + " minutes";
+}
+
+function parseDbtUniqueId(uniqueId) {
+  if (uniqueId === null || uniqueId === undefined || uniqueId === "") {
+    return {
+      failed_node_short: null,
+      failed_node_resource: null,
+      failed_node_project: null,
+    };
+  }
+  const s = String(uniqueId);
+  const parts = s.split(".");
+  if (parts.length >= 3) {
+    return {
+      failed_node_short: parts.slice(2).join("."),
+      failed_node_resource: parts[0],
+      failed_node_project: parts[1],
+    };
+  }
+  if (parts.length === 2) {
+    return {
+      failed_node_short: parts[1],
+      failed_node_resource: parts[0],
+      failed_node_project: null,
+    };
+  }
+  return {
+    failed_node_short: s,
+    failed_node_resource: null,
+    failed_node_project: null,
+  };
+}
+
+function withFailedNodeFields(node) {
+  const parsed = parseDbtUniqueId(node);
+  return {
+    failed_node: node || null,
+    failed_node_short: parsed.failed_node_short,
+    failed_node_resource: parsed.failed_node_resource,
+    failed_node_project: parsed.failed_node_project,
+    failed_node_note:
+      parsed.failed_node_project
+        ? "Prefer failed_node_short in answers; dbt project slug '" +
+          parsed.failed_node_project +
+          "' may differ from pipeline_name"
+        : null,
+  };
 }
 
 async function runMysqlQuery(sql, params) {
@@ -139,6 +185,7 @@ async function handler(event) {
         "start_time, end_time, duration, " +
         "tool_name, rows_read, rows_written, rows_added, " +
         "failure_stage, failed_node, failed_message, " +
+        "failed_nodes_json, error_class, " +
         "error_message, triggered_by, execution_mode " +
         "FROM obs_pipeline_runs WHERE id = ? LIMIT 1",
       [runId]
@@ -193,6 +240,33 @@ async function handler(event) {
         ")";
     }
 
+    let failedNodes = [];
+    if (r.failed_nodes_json) {
+      try {
+        const parsed = JSON.parse(String(r.failed_nodes_json));
+        if (Array.isArray(parsed)) failedNodes = parsed;
+      } catch (e) {
+        failedNodes = [];
+      }
+    }
+    failedNodes = failedNodes.map(function (n) {
+      const uid = n && n.unique_id != null ? n.unique_id : null;
+      const parsed = parseDbtUniqueId(uid);
+      return Object.assign({}, n, {
+        unique_id_short: parsed.failed_node_short,
+        unique_id_project: parsed.failed_node_project,
+      });
+    });
+
+    function clipMsg(v, maxLen) {
+      if (v === null || v === undefined || v === "") return null;
+      const s = String(v);
+      if (s.length <= maxLen) return s;
+      return s.slice(0, maxLen);
+    }
+
+    const nodeFields = withFailedNodeFields(r.failed_node);
+
     return reply({
       success: true,
       data: {
@@ -213,11 +287,15 @@ async function handler(event) {
           rows_written: r.rows_written,
           rows_added: r.rows_added,
           failure_stage: r.failure_stage,
-          failed_node: r.failed_node,
-          failed_message: r.failed_message
-            ? String(r.failed_message).slice(0, 1000)
-            : null,
-          error_message: r.error_message,
+          error_class: r.error_class,
+          failed_node: nodeFields.failed_node,
+          failed_node_short: nodeFields.failed_node_short,
+          failed_node_resource: nodeFields.failed_node_resource,
+          failed_node_project: nodeFields.failed_node_project,
+          failed_node_note: nodeFields.failed_node_note,
+          failed_message: clipMsg(r.failed_message, 8000),
+          failed_nodes: failedNodes,
+          error_message: clipMsg(r.error_message, 8000),
           triggered_by: r.triggered_by,
           execution_mode: r.execution_mode,
         },
@@ -225,7 +303,7 @@ async function handler(event) {
         lineage_hint: lineage_hint,
       },
       agentResponseContext:
-        "Lead with status. If failed: quote failure_stage (source|etl|target|unknown), failed_node, and error_message/failed_message. Include duration_display and rows_added. Then SOURCE vs TARGET row counts. Never invent failure location.",
+        "Lead with pipeline_name + status. If failed: quote failure_stage, error_class, prefer failed_node_short (e.g. stg_employees), then full failed_message. failed_node_project may differ from pipeline_name — do not claim wrong pipeline. List other failed_nodes unique_id_short if more than one. Include duration_display and rows. If TARGET empty and rows_written null, no target materialized. Never invent failure location or volumes.",
     });
   } catch (error) {
     console.error("obs-get-run-detail error:", error);

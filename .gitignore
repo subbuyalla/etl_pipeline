@@ -22,6 +22,9 @@ venv/
 twin_test.db
 vithi_metadata.db
 
+# Test artifacts
+vgen/_assistant_test_results/
+
 # IDE / OS
 .idea/
 .vscode/

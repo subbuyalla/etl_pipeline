@@ -1,0 +1,43 @@
+id: 6a795d69d2a5c44a535441dc
+name: Obs Compare Runs
+description: Compare last successful run vs latest failed run for RCA (what changed, volume mismatch)
+type: FAAS
+input_modes:
+- application/json
+output_modes:
+- application/json
+systemInstructions:
+- Use for what-changed, why-unhealthy, success-vs-fail, and volume mismatch RCA questions.
+- Accepts pipeline_id UUID OR pipeline name (e.g. hr_etl). Optional failed_run_id / success_run_id to pin runs.
+- 'Default: latest failed run vs the most recent success before it (or overall last success if none before).'
+- Quote deltas and tool fields only — never invent root cause beyond stored failure_stage / error_class / messages / row counts.
+arguments:
+  failed_run_id:
+    description: Optional explicit failed run id (obs_pipeline_runs.id)
+    required: false
+    type: string
+  pipeline_id:
+    description: Pipeline UUID OR pipeline name (e.g. hr_etl, stock_etl, ecommerce_etl)
+    required: true
+    type: string
+  pipeline_name:
+    description: Optional pipeline name if not using pipeline_id
+    required: false
+    type: string
+  success_run_id:
+    description: Optional explicit success run id to compare against
+    required: false
+    type: string
+examples:
+- What changed between the last successful and latest failed run for hr_etl?
+- Why is the employee pipeline unhealthy?
+- The source has more rows than the target — investigate hr_etl
+tags:
+- etl
+- rca
+- observability
+- compare
+createdBy: ''
+managedBy: []
+version: '1.0'
+functionId: 95ef95ee-89e6-453b-8476-0239aafd6c78

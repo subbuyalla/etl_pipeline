@@ -1,0 +1,38 @@
+id: 6a7970e3d2a5c44a5354421e
+name: Obs Schema Diff
+description: Compare SOURCE vs TARGET column catalogs for a pipeline run (missing columns, type mismatches)
+type: FAAS
+input_modes:
+- application/json
+output_modes:
+- application/json
+systemInstructions:
+- 'Use for schema compare questions: columns in source not in target, type mismatches, employee table schema diff.'
+- Requires pipeline_id or pipeline_name. Optional run_id (defaults to latest run with column snapshots).
+- Quote only_in_source, only_in_target, type_mismatches from the tool. If missing, say schema details are not available for this run. Never say metadata/Sync to the user.
+arguments:
+  pipeline_id:
+    description: Pipeline UUID OR pipeline name (e.g. hr_etl)
+    required: true
+    type: string
+  pipeline_name:
+    description: Optional pipeline name if not using pipeline_id
+    required: false
+    type: string
+  run_id:
+    description: Optional run id; default latest run that has column snapshots
+    required: false
+    type: string
+examples:
+- Compare the source and target schemas for the employee pipeline
+- Which columns exist in the source but not in the target for hr_etl?
+- Which columns have different data types between source and target?
+tags:
+- etl
+- schema
+- rca
+- observability
+createdBy: ''
+managedBy: []
+version: '1.0'
+functionId: d8b69281-bff8-48c5-9c0b-d95fa7245ba0

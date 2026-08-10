@@ -1,0 +1,40 @@
+id: 6a79698dd2a5c44a535441fd
+name: Obs Fleet Health
+description: Health summary for ALL registered pipelines in one call (fleet status, failure rates, active issues)
+type: FAAS
+input_modes:
+- application/json
+output_modes:
+- application/json
+systemInstructions:
+- Use for all-pipelines health, platform summary, highest failure rate, and active issues across the environment.
+- Do NOT use obs-list-pipelines for those questions. Do NOT invent success rates. Quote this tool only.
+- Returns one card per pipeline with latest status, success_rate in lookback, failure fields, and issue flags.
+- Optional time_window or lookback_runs applies the same window to every pipeline.
+arguments:
+  lookback_runs:
+    description: When time_window is omitted, how many recent runs per pipeline (default 10)
+    required: false
+    type: number
+  sla_hours:
+    description: Freshness SLA hours (default 24)
+    required: false
+    type: number
+  time_window:
+    description: today | yesterday | last_24h | last_7_days | YYYY-MM-DD | omit for lookback_runs
+    required: false
+    type: string
+examples:
+- What is the current health status of all ETL pipelines?
+- Which pipelines have the highest failure rate?
+- Are there any active issues in the ETL environment right now?
+- Give me a summary of the current ETL platform health.
+tags:
+- etl
+- observability
+- fleet
+- health
+createdBy: ''
+managedBy: []
+version: '1.0'
+functionId: c77e87bc-3331-4e93-94c6-518a9c4abb50

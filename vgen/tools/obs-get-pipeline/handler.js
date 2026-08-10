@@ -17,8 +17,7 @@ const DB_USER =
   (typeof process !== "undefined" && process.env && process.env.DB_USER) ||
   "admin";
 const DB_PASSWORD =
-  (typeof process !== "undefined" && process.env && process.env.DB_PASSWORD) ||
-  "";
+  (typeof process !== "undefined" && process.env && process.env.DB_PASSWORD) || "";
 const DB_NAME =
   (typeof process !== "undefined" && process.env && process.env.DB_NAME) ||
   "metadata";

@@ -9,6 +9,7 @@ output_modes:
 systemInstructions:
 - Call this first when the user does not name a pipeline, or asks which pipelines exist.
 - Returns pipeline_id, pipeline_name, is_active, and source/etl/target schemas from obs_pipelines.
+- Agents must reuse exact pipeline_name strings from this response (e.g. stock_etl, ecommerce_etl, hr_etl when registered). Never invent names or use dbt job/project labels instead.
 - Optional name_filter matches pipeline_name (LIKE). Never invent pipeline ids.
 - Always include server_now from the tool response when talking about time.
 arguments:
@@ -18,6 +19,7 @@ arguments:
     type: string
 examples:
 - What pipelines do we have?
+- List stock_etl ecommerce_etl hr_etl
 - Is the pipeline healthy?
 tags:
 - etl

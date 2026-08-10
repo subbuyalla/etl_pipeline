@@ -17,15 +17,13 @@ const DB_USER =
   (typeof process !== "undefined" && process.env && process.env.DB_USER) ||
   "admin";
 const DB_PASSWORD =
-  (typeof process !== "undefined" && process.env && process.env.DB_PASSWORD) ||
-  "";
+  (typeof process !== "undefined" && process.env && process.env.DB_PASSWORD) || "";
 const DB_NAME =
   (typeof process !== "undefined" && process.env && process.env.DB_NAME) ||
   "metadata";
 const DB_PORT = Number(
   (typeof process !== "undefined" && process.env && process.env.DB_PORT) ||
-    "3306"
-);
+    "3306");
 
 function jsonSafeDeep(value) {
   if (value === null || value === undefined) return value;
@@ -71,6 +69,54 @@ function formatDurationDisplay(seconds) {
   const h = Math.floor(m / 60);
   const remM = m % 60;
   return h + " hours " + remM + " minutes";
+}
+
+/** Split dbt unique_id model.project.name → short model name for answers. */
+function parseDbtUniqueId(uniqueId) {
+  if (uniqueId === null || uniqueId === undefined || uniqueId === "") {
+    return {
+      failed_node_short: null,
+      failed_node_resource: null,
+      failed_node_project: null,
+    };
+  }
+  const s = String(uniqueId);
+  const parts = s.split(".");
+  if (parts.length >= 3) {
+    return {
+      failed_node_short: parts.slice(2).join("."),
+      failed_node_resource: parts[0],
+      failed_node_project: parts[1],
+    };
+  }
+  if (parts.length === 2) {
+    return {
+      failed_node_short: parts[1],
+      failed_node_resource: parts[0],
+      failed_node_project: null,
+    };
+  }
+  return {
+    failed_node_short: s,
+    failed_node_resource: null,
+    failed_node_project: null,
+  };
+}
+
+function withFailedNodeFields(node) {
+  const parsed = parseDbtUniqueId(node);
+  return {
+    failed_node: node || null,
+    failed_node_short: parsed.failed_node_short,
+    failed_node_resource: parsed.failed_node_resource,
+    failed_node_project: parsed.failed_node_project,
+    failed_node_note:
+      parsed.failed_node_project
+        ? "failed_node is dbt unique_id; project slug '" +
+          parsed.failed_node_project +
+          "' may differ from pipeline_name — use failed_node_short in answers"
+        : null,
+  };
 }
 
 function parseRunDate(value) {
@@ -351,7 +397,7 @@ async function handler(event) {
 
     let runsSql =
       "SELECT id, status, start_time, end_time, duration, " +
-      "rows_read, rows_written, rows_added, failure_stage, failed_node, error_message " +
+      "rows_read, rows_written, rows_added, failure_stage, failed_node, error_class, error_message " +
       "FROM obs_pipeline_runs WHERE pipeline_id = ?" +
       window.clause +
       " ORDER BY start_time DESC";
@@ -371,7 +417,7 @@ async function handler(event) {
 
     const runCols =
       "id, status, start_time, end_time, duration, " +
-      "rows_read, rows_written, rows_added, failure_stage, failed_node, error_message ";
+      "rows_read, rows_written, rows_added, failure_stage, failed_node, error_class, error_message ";
     const latestOverallRows = await runMysqlQuery(
       "SELECT " +
         runCols +
@@ -484,6 +530,7 @@ async function handler(event) {
 
     let latest_run = null;
     if (latest) {
+      const nodeFields = withFailedNodeFields(latest.failed_node);
       latest_run = {
         run_id: latest.id,
         status: latest.status,
@@ -495,10 +542,15 @@ async function handler(event) {
         rows_written: latest.rows_written,
         rows_added: latest.rows_added,
         failure_stage: latest.failure_stage,
-        failed_node: latest.failed_node,
+        error_class: latest.error_class,
         error_message: latest.error_message
           ? String(latest.error_message).slice(0, 500)
           : null,
+        failed_node: nodeFields.failed_node,
+        failed_node_short: nodeFields.failed_node_short,
+        failed_node_resource: nodeFields.failed_node_resource,
+        failed_node_project: nodeFields.failed_node_project,
+        failed_node_note: nodeFields.failed_node_note,
       };
     }
 
@@ -563,7 +615,7 @@ async function handler(event) {
         }),
       },
       agentResponseContext:
-        "Quote ONLY tool numbers. avg_duration_seconds and duration_seconds are SECONDS — use avg_duration_display/duration_display when present. Never invent minutes. latest_run is the most recent run overall (not limited by time_window). metrics.runs_in_scope counts runs inside time_window only. Include freshness, success rate, rows_read/rows_written/rows_added on latest_run, lineage. Quote server_now.",
+        "REQUIRED answer shape: Problem / Evidence / Fix. Quote ONLY tool numbers. Prefer failed_node_short (e.g. stg_employees) in Evidence/Fix; failed_node is full dbt unique_id and failed_node_project may differ from pipeline_name — do not claim the wrong pipeline ran. Call this tool for health — do not diagnose from list-pipelines updated_at. duration is SECONDS. latest_run is most recent overall. success_rate is window-only. If no TARGET, freshness lag unknown. If TARGET empty and rows_written null, no target materialized. If failed, also use compare-runs or run-detail before Fix. Quote server_now.",
     });
   } catch (error) {
     console.error("obs-get-health error:", error);

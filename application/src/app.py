@@ -10,6 +10,7 @@ Endpoints:
   GET  /v1/pipelines/templates
   GET  /v1/pipelines/current
   POST /v1/sync
+  POST /grafana/dashboard
   POST /webhooks/dbt
   POST /webhooks/dbt/{pipeline_name}
 """
@@ -39,11 +40,14 @@ from application.src.store.meta_mysql import (  # noqa: E402
     upsert_pipeline,
 )
 from application.src.sync_once import run_sync_once  # noqa: E402
+from application.src.services.grafana_service import (  # noqa: E402
+    create_or_update_dashboard,
+)
 
 app = FastAPI(
     title="ETL Observability App API",
     description="Pipeline attach stored in MySQL; webhook Sync loads active or named pipeline",
-    version="0.4.1",
+    version="0.4.2",
 )
 
 # Allow local Vite UI (and similar) to call this API from another origin
@@ -238,6 +242,20 @@ def sync_manual(body: SyncRequest | None = None) -> dict:
             pipeline_name=body.pipeline_name,
             dbt_run_id=body.dbt_run_id,
         )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/grafana/dashboard")
+def generate_grafana_dashboard() -> dict:
+    """
+    Upsert the ETL Observability Grafana dashboard (stable uid).
+
+    Requires GRAFANA_URL + GRAFANA_TOKEN in .env. Creates MySQL views and
+    ensures a MySQL datasource exists, then writes starter KPI panels.
+    """
+    try:
+        return create_or_update_dashboard()
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 

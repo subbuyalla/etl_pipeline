@@ -93,6 +93,8 @@ def map_run(
         "failure_stage": raw.get("failure_stage"),
         "failed_node": raw.get("failed_node"),
         "failed_message": raw.get("failed_message"),
+        "failed_nodes": raw.get("failed_nodes") or [],
+        "error_class": raw.get("error_class"),
         "raw_log": json.dumps(raw, default=str),
         "execution_mode": execution_mode,
         "triggered_by": triggered_by,

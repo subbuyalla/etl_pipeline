@@ -8,7 +8,7 @@ output_modes:
 - application/json
 systemInstructions:
 - Primary tool for is-it-healthy, freshness, volume, success rate, and coarse lineage questions.
-- Accepts pipeline_id as UUID OR pipeline name (e.g. stock_etl). pipeline_name also works.
+- Accepts pipeline_id as UUID OR pipeline name (e.g. stock_etl, ecommerce_etl, hr_etl). pipeline_name also works. Use exact names from obs-list-pipelines.
 - 'Optional run_date (YYYY-MM-DD UTC) or YYYY-MM-DD as time_window for metrics on a specific day.'
 - Freshness and windows use MySQL UTC_TIMESTAMP — quote server_now in the answer.
 - rows_added on latest_run = net new target rows vs previous run (0 = no table growth).
@@ -21,11 +21,11 @@ arguments:
     required: false
     type: number
   pipeline_id:
-    description: Pipeline UUID OR pipeline name (e.g. stock_etl) — name is resolved automatically
+    description: Pipeline UUID OR pipeline name (e.g. stock_etl, ecommerce_etl, hr_etl) — name is resolved automatically
     required: true
     type: string
   pipeline_name:
-    description: Optional pipeline name if not using pipeline_id (e.g. stock_etl)
+    description: Optional pipeline name if not using pipeline_id (exact name from obs-list-pipelines)
     required: false
     type: string
   run_date:
@@ -42,7 +42,8 @@ arguments:
     type: string
 examples:
 - Is stock_etl healthy?
-- What is today's success rate?
+- Is hr_etl healthy?
+- What is today's success rate for ecommerce_etl?
 - What was stock_etl health on 2026-08-05?
 tags:
 - etl

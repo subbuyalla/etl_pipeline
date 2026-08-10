@@ -18,11 +18,11 @@ arguments:
     required: false
     type: number
   pipeline_id:
-    description: Pipeline UUID OR pipeline name (e.g. stock_etl) — name is resolved automatically
+    description: Pipeline UUID OR pipeline name (e.g. stock_etl, ecommerce_etl, hr_etl) — name is resolved automatically
     required: true
     type: string
   pipeline_name:
-    description: Optional pipeline name if not using pipeline_id
+    description: Optional pipeline name if not using pipeline_id (exact name from obs-list-pipelines)
     required: false
     type: string
   run_date:
@@ -39,7 +39,8 @@ arguments:
     type: string
 examples:
 - Show today's failures for stock_etl
-- List runs for stock_etl on 2026-08-05
+- Show failures for hr_etl
+- List runs for ecommerce_etl on 2026-08-05
 - List recent runs
 tags:
 - etl

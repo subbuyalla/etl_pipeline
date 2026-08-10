@@ -17,8 +17,7 @@ const DB_USER =
   (typeof process !== "undefined" && process.env && process.env.DB_USER) ||
   "admin";
 const DB_PASSWORD =
-  (typeof process !== "undefined" && process.env && process.env.DB_PASSWORD) ||
-  "";
+  (typeof process !== "undefined" && process.env && process.env.DB_PASSWORD) || "";
 const DB_NAME =
   (typeof process !== "undefined" && process.env && process.env.DB_NAME) ||
   "metadata";
@@ -163,16 +162,25 @@ async function handler(event) {
       };
     });
 
+    const exactNames = pipelines
+      .map(function (p) {
+        return p.pipeline_name;
+      })
+      .filter(Boolean);
     let agentResponseContext;
     if (pipelines.length === 0) {
       agentResponseContext =
-        "No pipelines found. Tell the user none are registered yet.";
+        "No pipelines found. Tell the user none are registered yet. Do not invent pipeline names.";
     } else if (pipelines.length === 1) {
       agentResponseContext =
-        "Only one pipeline exists. You may use it and tell the user which one.";
+        "Only one pipeline exists. Use exact pipeline_name='" +
+        exactNames[0] +
+        "' in later tool calls and answers. Do not substitute dbt project/job labels.";
     } else {
       agentResponseContext =
-        "Multiple pipelines. List name + lineage_summary + id and ask which one.";
+        "Multiple pipelines. Quote these exact pipeline_name values only: " +
+        exactNames.join(", ") +
+        ". List name + lineage_summary + id. If the user already named a pipeline or asked health/failure/volume, do NOT answer from this tool alone — next call obs-get-health / obs-compare-runs / obs-get-run-detail. Never invent names or diagnose from updated_at.";
     }
 
     return reply({

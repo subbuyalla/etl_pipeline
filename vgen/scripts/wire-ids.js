@@ -16,7 +16,11 @@ function readYamlId(filePath) {
 function replaceListBlock(filePath, key, ids) {
   let text = fs.readFileSync(filePath, "utf8");
   const block = [key + ":"].concat(ids.map((id) => '  - "' + id + '"')).join("\n");
-  const reMulti = new RegExp("^" + key + ":\\n(?:[ \\t]+-[^\\n]*\\n)*", "m");
+  // Match list items with optional indent (YAML allows "- id" or "  - id").
+  const reMulti = new RegExp(
+    "^" + key + ":\\n(?:[ \\t]*-[^\\n]*\\n)*",
+    "m"
+  );
   const reEmpty = new RegExp("^" + key + ":\\s*\\[\\s*\\]\\s*$", "m");
   if (reMulti.test(text)) {
     text = text.replace(reMulti, block + "\n");
@@ -35,16 +39,24 @@ const toolOrderObs = [
   "obs-list-runs",
   "obs-get-run-detail",
   "obs-get-health",
+  "obs-compare-runs",
+  "obs-fleet-health",
+  "obs-last-success",
+  "obs-schema-diff",
+  "obs-query-history",
 ];
 const toolOrderRca = [
   "obs-list-pipelines",
   "obs-list-runs",
   "obs-get-run-detail",
   "obs-get-health",
+  "obs-compare-runs",
+  "obs-schema-diff",
+  "obs-query-history",
 ];
 
 const toolIds = {};
-for (const name of toolOrderObs) {
+for (const name of [...new Set([...toolOrderObs, ...toolOrderRca])]) {
   const id = readYamlId(path.join(root, "tools", name, "tool.yaml"));
   if (!id || id === '""') {
     console.warn("WARN: tools/" + name + "/tool.yaml has empty id");

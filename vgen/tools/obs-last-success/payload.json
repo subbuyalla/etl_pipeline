@@ -1,0 +1,7 @@
+{
+  "context": {
+    "input": {
+      "pipeline_names": "ecommerce_etl,stock_etl"
+    }
+  }
+}

@@ -4,22 +4,73 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
+def relation_short_names(relations: list[str] | None) -> list[str]:
+    """Extract bare table names from dbt relation_name values (DB.SCHEMA.TABLE)."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for rel in relations or []:
+        text = str(rel or "").strip()
+        if not text:
+            continue
+        # Strip quotes and take last segment
+        parts = text.replace('"', "").replace("`", "").split(".")
+        name = (parts[-1] if parts else text).strip().upper()
+        if name and name not in seen:
+            seen.add(name)
+            out.append(name)
+    return out
+
+
+def classify_error_class(message: str | None) -> str:
+    text = (message or "").lower()
+    if not text:
+        return "unknown"
+    if any(k in text for k in ("compilation error", "compile error", "parsing error")):
+        return "compilation"
+    if any(
+        k in text
+        for k in (
+            "permission",
+            "not authorized",
+            "access control",
+            "insufficient privileges",
+        )
+    ):
+        return "permission"
+    if any(k in text for k in ("timeout", "timed out", "deadline")):
+        return "timeout"
+    if any(
+        k in text
+        for k in (
+            "runtime error",
+            "database error",
+            "sql compilation",
+            "does not exist",
+            "null value",
+            "duplicate",
+        )
+    ):
+        return "runtime"
+    return "unknown"
+
+
 class DbtConnector:
     """one class= one tool(dbt)"""
 
-    tool_id="dbt_lab"
+    tool_id = "dbt_lab"
+
     def __init__(
-    self,
-    *,
-    tenant_id: str,
-    connector_instance_id: str,
-    account_id: str,  # dbt Cloud account id
-    project_id: str = "",
-    job_id: str = "",  # optional: filter one job
-    project_name: str = "analytics",
-    api_base: str = "https://cloud.getdbt.com/api/v2",
-    api_token: str | None = None,
-):
+        self,
+        *,
+        tenant_id: str,
+        connector_instance_id: str,
+        account_id: str,  # dbt Cloud account id
+        project_id: str = "",
+        job_id: str = "",  # optional: filter one job
+        project_name: str = "analytics",
+        api_base: str = "https://cloud.getdbt.com/api/v2",
+        api_token: str | None = None,
+    ):
         self.tenant_id = tenant_id
         self.connector_instance_id = connector_instance_id
         self.account_id = account_id
@@ -32,6 +83,7 @@ class DbtConnector:
             "Authorization": f"Token {self.api_token}",
             "Content-Type": "application/json",
         }
+
     def _get(self, path: str) -> dict:
         """HTTP GET to dbt Cloud API (like Snowflake _connect + execute)."""
         if not self.api_token:
@@ -73,7 +125,7 @@ class DbtConnector:
     def _row_counts_from_artifact(self, run_id: str) -> dict:
         """
         From run_results.json artifact, sum adapter rows_affected.
-        Also collect relation_name list and first failed node for RCA.
+        Collect all failed nodes for RCA and relation names for table filters.
         """
         data = self._get_optional(
             f"/accounts/{self.account_id}/runs/{run_id}/artifacts/run_results.json"
@@ -87,6 +139,8 @@ class DbtConnector:
             "failed_node": None,
             "failed_message": None,
             "failure_stage": None,
+            "failed_nodes": [],
+            "error_class": None,
         }
         if not isinstance(data, dict):
             return empty
@@ -94,6 +148,7 @@ class DbtConnector:
         total = 0
         found = False
         relations: list[str] = []
+        failed_nodes: list[dict] = []
         failed_node = None
         failed_message = None
 
@@ -107,9 +162,17 @@ class DbtConnector:
             unique_id = result.get("unique_id") or result.get("node")
             status = str(result.get("status") or "").lower()
             msg = result.get("message") or result.get("error") or ""
-            if status in {"error", "fail", "failed"} and failed_node is None:
-                failed_node = str(unique_id or rel or "unknown_node")
-                failed_message = str(msg)[:2000] if msg else None
+            if status in {"error", "fail", "failed"}:
+                entry = {
+                    "unique_id": str(unique_id or rel or "unknown_node"),
+                    "status": status,
+                    "message": str(msg)[:2000] if msg else None,
+                    "relation_name": str(rel) if rel else None,
+                }
+                failed_nodes.append(entry)
+                if failed_node is None:
+                    failed_node = entry["unique_id"]
+                    failed_message = entry["message"]
 
             adapter = result.get("adapter_response") or {}
             rows = None
@@ -124,27 +187,32 @@ class DbtConnector:
                 found = True
 
         failure_stage = "etl" if failed_node else None
+        error_class = (
+            classify_error_class(failed_message) if failed_node else None
+        )
 
-        if not found:
-            return {
-                "rows_read": None,
-                "rows_written": None,
-                "node_count": len(data.get("results") or []),
-                "relations": relations,
-                "rows_from": None,
-                "failed_node": failed_node,
-                "failed_message": failed_message,
-                "failure_stage": failure_stage,
-            }
-        return {
-            "rows_read": total,
-            "rows_written": total,
+        base = {
             "node_count": len(data.get("results") or []),
             "relations": relations,
-            "rows_from": "dbt_run_results_artifact",
             "failed_node": failed_node,
             "failed_message": failed_message,
             "failure_stage": failure_stage,
+            "failed_nodes": failed_nodes,
+            "error_class": error_class,
+        }
+
+        if not found:
+            return {
+                **base,
+                "rows_read": None,
+                "rows_written": None,
+                "rows_from": None,
+            }
+        return {
+            **base,
+            "rows_read": total,
+            "rows_written": total,
+            "rows_from": "dbt_run_results_artifact",
         }
 
     @staticmethod
@@ -158,11 +226,42 @@ class DbtConnector:
         """Classify failure location for assistant RCA (best-effort)."""
         if status != "failed":
             return None
+        text = (error_message or "").lower()
+        node = (failed_node or "").lower()
+
+        # Source / upstream read signals
+        if any(
+            k in text
+            for k in (
+                "source(",
+                "source not found",
+                "upstream",
+                "seed not found",
+                "depends on",
+                "could not find raw",
+            )
+        ) or node.startswith("source."):
+            return "source"
+
+        # Target / warehouse write signals
+        if any(
+            k in text
+            for k in (
+                "does not exist or not authorized",
+                "insufficient privileges",
+                "permission denied",
+                "not authorized to",
+                "cannot create",
+                "object does not exist",
+                "warehouse",
+            )
+        ):
+            return "target"
+
         if artifact_stage:
             return artifact_stage
         if failed_node:
             return "etl"
-        text = (error_message or "").lower()
         if any(
             k in text
             for k in (
@@ -176,22 +275,28 @@ class DbtConnector:
             )
         ):
             return "etl"
-        if any(
-            k in text
-            for k in (
-                "does not exist or not authorized",
-                "object does not exist",
-                "schema",
-                "relation",
-                "warehouse",
-                "snowflake",
-            )
-        ):
-            # Often target write / warehouse — still usually surfaced via dbt
-            return "target"
         if any(k in text for k in ("connection", "timeout", "network", "unreachable")):
             return "unknown"
         return "etl"
+
+    def _job_ids_for_project(self) -> set[str]:
+        """Resolve job definition ids for this connector's project (shared accounts)."""
+        if not self.project_id:
+            return set()
+        try:
+            data = self._get(
+                f"/accounts/{self.account_id}/jobs/"
+                f"?project_id={self.project_id}&limit=100"
+            )
+        except Exception:
+            return set()
+        jobs = data.get("data") or []
+        out: set[str] = set()
+        for job in jobs:
+            jid = job.get("id")
+            if jid is not None:
+                out.add(str(jid))
+        return out
 
     def _fetch_runs(self, *, limit: int = 10) -> list[dict]:
         """
@@ -207,10 +312,30 @@ class DbtConnector:
                 f"?job_definition_id={self.job_id}&order_by=-id&limit={limit}"
             )
         else:
-            path = f"/accounts/{self.account_id}/runs/?order_by=-id&limit={limit}"
+            # Do not pass project_id here — some dbt hosts return 404 for that filter.
+            path = (
+                f"/accounts/{self.account_id}/runs/"
+                f"?order_by=-id&limit={max(limit, 30)}"
+            )
 
         data = self._get(path)
         runs = data.get("data") or []
+
+        if self.job_id:
+            pass
+        elif self.project_id:
+            want_project = str(self.project_id)
+            job_ids = self._job_ids_for_project()
+            filtered = []
+            for r in runs:
+                rid_project = str(r.get("project_id") or "")
+                rid_job = str(r.get("job_definition_id") or "")
+                if rid_project and rid_project == want_project:
+                    filtered.append(r)
+                elif job_ids and rid_job in job_ids:
+                    filtered.append(r)
+            runs = filtered[:limit]
+
         rows: list[dict] = []
         for run in runs:
             status_code = run.get("status")
@@ -224,6 +349,7 @@ class DbtConnector:
             run_id = str(run.get("id"))
             counts = self._row_counts_from_artifact(run_id)
             relations = counts.pop("relations", [])
+            failed_nodes = counts.pop("failed_nodes", []) or []
             error_message = run.get("status_message")
             failed_node = counts.get("failed_node")
             failed_message = counts.get("failed_message")
@@ -239,6 +365,9 @@ class DbtConnector:
                 failed_node=failed_node,
                 artifact_stage=counts.get("failure_stage"),
             )
+            error_class = counts.get("error_class")
+            if status == "failed" and not error_class:
+                error_class = classify_error_class(error_message)
 
             rows.append(
                 {
@@ -258,6 +387,8 @@ class DbtConnector:
                     "failed_node": failed_node,
                     "failed_message": failed_message,
                     "failure_stage": failure_stage,
+                    "failed_nodes": failed_nodes,
+                    "error_class": error_class,
                 }
             )
         return rows
@@ -290,8 +421,9 @@ class DbtConnector:
                         "failed_node": row.get("failed_node"),
                         "failed_message": row.get("failed_message"),
                         "failure_stage": row.get("failure_stage"),
+                        "failed_nodes": row.get("failed_nodes") or [],
+                        "error_class": row.get("error_class"),
                     },
                 }
             )
         return envelopes
-

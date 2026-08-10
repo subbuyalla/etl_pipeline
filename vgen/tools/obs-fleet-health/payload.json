@@ -1,0 +1,8 @@
+{
+  "context": {
+    "input": {
+      "lookback_runs": 10,
+      "sla_hours": 24
+    }
+  }
+}

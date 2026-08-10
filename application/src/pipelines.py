@@ -13,6 +13,14 @@ def new_pipeline_id() -> str:
     return str(uuid.uuid4())
 
 
+def _tables_from_env(env_name: str, default: list[str] | None = None) -> list[str]:
+    """Parse CSV table names from env (e.g. RAW_EMPLOYEES,OTHER)."""
+    raw = (os.getenv(env_name) or "").strip()
+    if raw:
+        return [p.strip().upper() for p in raw.split(",") if p.strip()]
+    return list(default or [])
+
+
 # Demo pipeline: Snowflake (RAW) -> dbt -> Snowflake (staging)
 STOCK_ETL: dict[str, Any] = {
     "pipeline_name": "stock_etl",
@@ -27,6 +35,7 @@ STOCK_ETL: dict[str, Any] = {
         "warehouse_id": os.getenv("SNOWFLAKE_WAREHOUSE", "COMPUTE_WH"),
         "database_id": os.getenv("SNOWFLAKE_DATABASE", "ANALYTICS_DB"),
         "schema": os.getenv("SF_SOURCE_SCHEMA", "RAW"),
+        "tables": _tables_from_env("SF_SOURCE_TABLES"),
         "sf_role": os.getenv("SNOWFLAKE_ROLE", "ACCOUNTADMIN"),
     },
     "etl": {
@@ -49,6 +58,7 @@ STOCK_ETL: dict[str, Any] = {
         "warehouse_id": os.getenv("SNOWFLAKE_WAREHOUSE", "COMPUTE_WH"),
         "database_id": os.getenv("SNOWFLAKE_DATABASE", "ANALYTICS_DB"),
         "schema": os.getenv("SF_TARGET_SCHEMA", "STAGING_STAGING"),
+        "tables": _tables_from_env("SF_TARGET_TABLES"),
         "sf_role": os.getenv("SNOWFLAKE_ROLE", "ACCOUNTADMIN"),
     },
 }
@@ -73,6 +83,9 @@ ECOMMERCE_ETL: dict[str, Any] = {
         "warehouse_id": os.getenv("ECOM_SNOWFLAKE_WAREHOUSE", "ECOMMERCE_WH"),
         "database_id": os.getenv("ECOM_SNOWFLAKE_DATABASE", "ECOMMERCE"),
         "schema": os.getenv("ECOM_SF_SOURCE_SCHEMA", "SRC_DATA"),
+        "tables": _tables_from_env(
+            "ECOM_SF_SOURCE_TABLES", ["RAW_CUSTOMERS", "RAW_ORDERS"]
+        ),
         "sf_role": os.getenv(
             "ECOM_SNOWFLAKE_ROLE", os.getenv("SNOWFLAKE_ROLE", "ACCOUNTADMIN")
         ),
@@ -81,9 +94,9 @@ ECOMMERCE_ETL: dict[str, Any] = {
         "tool": "dbt",
         "connector_instance_id": "dbt-ecom-job",
         "account_id": os.getenv("ECOM_DBT_ACCOUNT_ID", "70506183153835"),
-        # "Pipeline ID" from UI mapped to project_id (set ECOM_DBT_JOB_ID to filter one job)
-        "project_id": os.getenv("ECOM_DBT_PROJECT_ID", "70506183136444"),
-        "job_id": os.getenv("ECOM_DBT_JOB_ID", ""),
+        # Shared eg250 Cloud project; job_id isolates ecommerce vs hr jobs
+        "project_id": os.getenv("ECOM_DBT_PROJECT_ID", "70506183156878"),
+        "job_id": os.getenv("ECOM_DBT_JOB_ID", "70506183136444"),
         "project_name": os.getenv("ECOM_DBT_PROJECT_NAME", "ecommerce"),
         "api_base": os.getenv(
             "ECOM_DBT_API_BASE", "https://eg250.us1.dbt.com/api/v2"
@@ -104,6 +117,9 @@ ECOMMERCE_ETL: dict[str, Any] = {
         "warehouse_id": os.getenv("ECOM_SNOWFLAKE_WAREHOUSE", "ECOMMERCE_WH"),
         "database_id": os.getenv("ECOM_SNOWFLAKE_DATABASE", "ECOMMERCE"),
         "schema": os.getenv("ECOM_SF_TARGET_SCHEMA", "CLEAN_DATA"),
+        "tables": _tables_from_env(
+            "ECOM_SF_TARGET_TABLES", ["MY_FIRST_DBT_MODEL"]
+        ),
         "sf_role": os.getenv(
             "ECOM_SNOWFLAKE_ROLE", os.getenv("SNOWFLAKE_ROLE", "ACCOUNTADMIN")
         ),
@@ -159,6 +175,7 @@ HR_ETL: dict[str, Any] = {
         "warehouse_id": os.getenv("HR_SNOWFLAKE_WAREHOUSE", "HR_ANALYTICS_WH"),
         "database_id": os.getenv("HR_SNOWFLAKE_DATABASE", "HR_ANALYTICS"),
         "schema": os.getenv("HR_SF_SOURCE_SCHEMA", "RAW_DATA"),
+        "tables": _tables_from_env("HR_SF_SOURCE_TABLES", ["RAW_EMPLOYEES"]),
         "sf_role": os.getenv(
             "HR_SNOWFLAKE_ROLE", os.getenv("SNOWFLAKE_ROLE", "ACCOUNTADMIN")
         ),
@@ -167,9 +184,9 @@ HR_ETL: dict[str, Any] = {
         "tool": "dbt",
         "connector_instance_id": "dbt-hr-job",
         "account_id": os.getenv("HR_DBT_ACCOUNT_ID", "70506183153835"),
-        # "Pipeline ID" from UI mapped to project_id
-        "project_id": os.getenv("HR_DBT_PROJECT_ID", "70506183136587"),
-        "job_id": os.getenv("HR_DBT_JOB_ID", ""),
+        # Shared eg250 Cloud project; job_id isolates hr vs ecommerce jobs
+        "project_id": os.getenv("HR_DBT_PROJECT_ID", "70506183156878"),
+        "job_id": os.getenv("HR_DBT_JOB_ID", "70506183136587"),
         "project_name": os.getenv("HR_DBT_PROJECT_NAME", "hr_analytics"),
         "api_base": os.getenv(
             "HR_DBT_API_BASE", "https://eg250.us1.dbt.com/api/v2"
@@ -190,6 +207,7 @@ HR_ETL: dict[str, Any] = {
         "warehouse_id": os.getenv("HR_SNOWFLAKE_WAREHOUSE", "HR_ANALYTICS_WH"),
         "database_id": os.getenv("HR_SNOWFLAKE_DATABASE", "HR_ANALYTICS"),
         "schema": os.getenv("HR_SF_TARGET_SCHEMA", "FINAL_DATA"),
+        "tables": _tables_from_env("HR_SF_TARGET_TABLES", ["DIM_EMPLOYEES"]),
         "sf_role": os.getenv(
             "HR_SNOWFLAKE_ROLE", os.getenv("SNOWFLAKE_ROLE", "ACCOUNTADMIN")
         ),

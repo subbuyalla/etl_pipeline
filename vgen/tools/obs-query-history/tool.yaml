@@ -1,0 +1,42 @@
+id: 6a7970e5d2a5c44a5354421f
+name: Obs Query History
+description: Return Snowflake query-history snippets stored for a pipeline run (RCA for failed transforms)
+type: FAAS
+input_modes:
+- application/json
+output_modes:
+- application/json
+systemInstructions:
+- Use for RCA when users ask about Snowflake errors, failed SQL, or query history for a failed run.
+- Requires pipeline_id or pipeline_name. Optional run_id (defaults to latest failed run with query history, else latest failed).
+- Quote error_message, query_text snippets, and warehouse from the tool. If empty, say Snowflake query details are not available for this run. Never say metadata/Sync to the user.
+arguments:
+  limit:
+    description: Max query history rows (default 20, max 50)
+    required: false
+    type: number
+  pipeline_id:
+    description: Pipeline UUID OR pipeline name (e.g. hr_etl)
+    required: true
+    type: string
+  pipeline_name:
+    description: Optional pipeline name if not using pipeline_id
+    required: false
+    type: string
+  run_id:
+    description: Optional run id; default latest failed run with query history
+    required: false
+    type: string
+examples:
+- Show Snowflake query errors for the last failed employee run
+- What SQL failed in Snowflake for hr_etl?
+- Pull query history for the latest failed ecommerce run
+tags:
+- etl
+- snowflake
+- rca
+- observability
+createdBy: ''
+managedBy: []
+version: '1.0'
+functionId: bea15dae-65be-48d6-a997-7e4ed4e0d522

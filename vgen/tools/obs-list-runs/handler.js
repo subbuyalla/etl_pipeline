@@ -17,8 +17,7 @@ const DB_USER =
   (typeof process !== "undefined" && process.env && process.env.DB_USER) ||
   "admin";
 const DB_PASSWORD =
-  (typeof process !== "undefined" && process.env && process.env.DB_PASSWORD) ||
-  "";
+  (typeof process !== "undefined" && process.env && process.env.DB_PASSWORD) || "";
 const DB_NAME =
   (typeof process !== "undefined" && process.env && process.env.DB_NAME) ||
   "metadata";
@@ -320,8 +319,8 @@ async function handler(event) {
       "SELECT id, pipeline_id, pipeline_name, status, " +
       "start_time, end_time, duration, " +
       "tool_name, rows_read, rows_written, rows_added, " +
-      "failure_stage, failed_node, " +
-      "LEFT(error_message, 500) AS error_message, " +
+      "failure_stage, failed_node, error_class, " +
+      "LEFT(COALESCE(failed_message, error_message), 500) AS error_message, " +
       "triggered_by FROM obs_pipeline_runs WHERE pipeline_id = ?";
 
     if (status) {
@@ -352,6 +351,7 @@ async function handler(event) {
         rows_added: r.rows_added,
         failure_stage: r.failure_stage,
         failed_node: r.failed_node,
+        error_class: r.error_class,
         error_message: r.error_message,
         triggered_by: r.triggered_by,
       };
