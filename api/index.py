@@ -1,5 +1,5 @@
 """
-Vercel ASGI entry (legacy api/ path). Prefer root app.py for FastAPI detection.
+Legacy api/ entry — same FastAPI instance as root app.py.
 """
 
 from __future__ import annotations
@@ -8,10 +8,9 @@ import sys
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
-_root_str = str(_ROOT)
-if _root_str not in sys.path:
-    sys.path.insert(0, _root_str)
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
-from application.src.app import app  # noqa: E402
+from application.src.app import app
 
 __all__ = ["app"]
