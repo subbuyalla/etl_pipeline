@@ -59,6 +59,7 @@ Do **not** commit secrets. Set at least:
 | `GRAFANA_TOKEN` | Grafana service-account token |
 | `GRAFANA_DATASOURCE_UID` | optional pin |
 | `GRAFANA_DASHBOARD_UID` | default `etl-obs` |
+| `PUBLIC_BASE_URL` | optional override; default `https://etl-pipeline-lemon.vercel.app` |
 
 RDS must allow connections from Vercel egress (or be publicly reachable with auth).
 
@@ -75,11 +76,24 @@ This project sets `maxDuration: 60` (Pro). If Sync still times out or the
 Snowflake wheel is too large for serverless, run Sync on Docker/EC2 and keep
 Vercel for lighter read/control endpoints.
 
+## dbt Cloud webhook URLs (production)
+
+Base: `https://etl-pipeline-lemon.vercel.app`
+
+| Pipeline | Webhook URL (POST) |
+|----------|--------------------|
+| Active pipeline | `https://etl-pipeline-lemon.vercel.app/webhooks/dbt` |
+| stock_etl | `https://etl-pipeline-lemon.vercel.app/webhooks/dbt/stock_etl` |
+| ecommerce_etl | `https://etl-pipeline-lemon.vercel.app/webhooks/dbt/ecommerce_etl` |
+| hr_etl | `https://etl-pipeline-lemon.vercel.app/webhooks/dbt/hr_etl` |
+
+Also listed on `GET /health` as `webhook_urls`.
+
 ## Main endpoints
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/health` | Liveness |
+| GET | `/health` | Liveness + webhook URLs |
 | GET/POST | `/v1/pipelines` | List / create pipelines |
 | POST | `/v1/sync` | Manual Sync |
 | POST | `/grafana/dashboard` | Upsert Grafana dashboard |

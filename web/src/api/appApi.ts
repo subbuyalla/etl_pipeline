@@ -5,7 +5,7 @@
 import type { PipelineView } from "../lib/studioStore";
 
 const APP_API_BASE =
-  import.meta.env.VITE_API_BASE ?? "http://18.61.29.231:2222";
+  import.meta.env.VITE_API_BASE ?? "https://etl-pipeline-lemon.vercel.app";
 
 export type AppPipelineRow = {
   pipeline_id: string;

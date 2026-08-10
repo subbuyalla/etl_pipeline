@@ -17,6 +17,7 @@ Endpoints:
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,35 @@ from pydantic import BaseModel, Field
 
 ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(ROOT / ".env")
+
+# Public API base (Vercel production). Override with PUBLIC_BASE_URL if needed.
+DEFAULT_PUBLIC_BASE_URL = "https://etl-pipeline-lemon.vercel.app"
+
+
+def public_base_url() -> str:
+    explicit = (os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")
+    if explicit:
+        return explicit
+    vercel = (os.getenv("VERCEL_URL") or "").strip().rstrip("/")
+    if vercel:
+        if vercel.startswith("http://") or vercel.startswith("https://"):
+            return vercel
+        return f"https://{vercel}"
+    return DEFAULT_PUBLIC_BASE_URL
+
+
+def webhook_urls(base: str | None = None) -> dict[str, Any]:
+    root = (base or public_base_url()).rstrip("/")
+    return {
+        "base_url": root,
+        "active": f"{root}/webhooks/dbt",
+        "by_name": f"{root}/webhooks/dbt/{{pipeline_name}}",
+        "pipelines": {
+            "stock_etl": f"{root}/webhooks/dbt/stock_etl",
+            "ecommerce_etl": f"{root}/webhooks/dbt/ecommerce_etl",
+            "hr_etl": f"{root}/webhooks/dbt/hr_etl",
+        },
+    }
 
 from application.src.pipelines import (  # noqa: E402
     get_pipeline_template,
@@ -61,12 +91,15 @@ app.add_middleware(
 
 
 @app.get("/")
-def root() -> dict[str, str]:
+def root() -> dict[str, Any]:
     """Root probe for Vercel / load balancers."""
+    base = public_base_url()
     return {
         "service": "etl-observability-api",
-        "docs": "/docs",
-        "health": "/health",
+        "base_url": base,
+        "docs": f"{base}/docs",
+        "health": f"{base}/health",
+        "webhook_urls": webhook_urls(base),
     }
 
 
@@ -164,19 +197,13 @@ def _handle_dbt_webhook(
 @app.get("/health")
 def health() -> dict:
     active = get_active_pipeline()
+    base = public_base_url()
     return {
         "ok": True,
+        "base_url": base,
         "pipeline_from": "metadata.obs_pipelines",
         "templates": list_pipeline_templates(),
-        "webhook_urls": {
-            "active": "/webhooks/dbt",
-            "by_name": "/webhooks/dbt/{pipeline_name}",
-            "examples": [
-                "/webhooks/dbt/stock_etl",
-                "/webhooks/dbt/ecommerce_etl",
-                "/webhooks/dbt/hr_etl",
-            ],
-        },
+        "webhook_urls": webhook_urls(base),
         "active_pipeline": {
             "pipeline_id": (active or {}).get("pipeline_id"),
             "pipeline_name": (active or {}).get("pipeline_name"),
@@ -287,9 +314,9 @@ def dbt_webhook_for_pipeline(pipeline_name: str, payload: dict) -> dict:
     """
     dbt Cloud webhook for one named pipeline.
 
-    Examples:
-      http://18.61.29.231:1111/webhooks/dbt/stock_etl
-      http://18.61.29.231:1111/webhooks/dbt/ecommerce_etl
-      http://18.61.29.231:1111/webhooks/dbt/hr_etl
+    Examples (production):
+      https://etl-pipeline-lemon.vercel.app/webhooks/dbt/stock_etl
+      https://etl-pipeline-lemon.vercel.app/webhooks/dbt/ecommerce_etl
+      https://etl-pipeline-lemon.vercel.app/webhooks/dbt/hr_etl
     """
     return _handle_dbt_webhook(payload, pipeline_name=pipeline_name)
