@@ -10,6 +10,8 @@ Endpoints:
   GET  /v1/pipelines/templates
   GET  /v1/pipelines/current
   POST /v1/sync
+  GET  /v1/dashboard/overview
+  GET  /api/v1/*               ← versioned dashboard UI APIs (see /docs)
   POST /grafana/dashboard
   POST /webhooks/dbt
   POST /webhooks/dbt/{pipeline_name}
@@ -73,12 +75,23 @@ from application.src.sync_once import run_sync_once  # noqa: E402
 from application.src.services.grafana_service import (  # noqa: E402
     create_or_update_dashboard,
 )
+from application.src.services.dashboard_service import (  # noqa: E402
+    build_overview,
+)
+from application.src.api.observability_router import (  # noqa: E402
+    router as observability_api_router,
+)
 
 app = FastAPI(
     title="ETL Observability App API",
-    description="Pipeline attach stored in MySQL; webhook Sync loads active or named pipeline",
-    version="0.4.2",
+    description=(
+        "Pipeline attach stored in MySQL; webhook Sync loads active or named pipeline. "
+        "Dashboard UI APIs under /api/v1/*."
+    ),
+    version="0.5.0",
 )
+
+app.include_router(observability_api_router, prefix="/api/v1")
 
 # Allow local Vite UI (and similar) to call this API from another origin
 app.add_middleware(
@@ -279,6 +292,20 @@ def sync_manual(body: SyncRequest | None = None) -> dict:
             pipeline_name=body.pipeline_name,
             dbt_run_id=body.dbt_run_id,
         )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/v1/dashboard/overview")
+def dashboard_overview(
+    range: str = Query(
+        default="24h",
+        description="Time range for run-based widgets: 24h | 7d | 30d | all",
+    ),
+) -> dict:
+    """Executive Overview payload from Metadata MySQL views and TARGET assets."""
+    try:
+        return build_overview(range)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
