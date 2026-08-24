@@ -13,6 +13,7 @@ from application.src.services.observability.filters import (
     fetchall,
     fetchone,
     format_duration,
+    is_pipeline_operational,
     json_val,
     num,
     parse_range,
@@ -320,7 +321,13 @@ def build_pipeline_monitoring(conn, rng: dict, **filters) -> list[dict]:
                 "avg_duration_seconds": num(r.get("avg_duration")) if r.get("avg_duration") is not None else None,
                 "last_run": json_val(r.get("last_run_at")),
                 "last_run_age": age_label(r.get("last_run_at")),
-                "is_active": r.get("is_active"),
+                "is_active": is_pipeline_operational(r.get("last_run_at"), r.get("latest_status")),
+                "activity": (
+                    "Active"
+                    if is_pipeline_operational(r.get("last_run_at"), r.get("latest_status"))
+                    else "Inactive"
+                ),
+                "is_sync_default": bool(r.get("is_active")),
             }
         )
     return out
@@ -525,10 +532,107 @@ def build_pipelines_list(
 
 
 def build_pipeline_detail(conn, pipeline_id: str) -> dict[str, Any]:
+    """Full pipeline card: source/etl/target ids, name, activity, and last run."""
     from application.src.services.observability.freshness import load_pipeline_freshness
-    from application.src.services.observability.lineage import build_lineage_detail
+    from application.src.services.observability.lineage import _assets_for_run, _latest_run
 
-    return build_lineage_detail(conn, pipeline_id)
+    pipe = fetchone(conn, "SELECT * FROM obs_pipelines WHERE pipeline_id = %s", (pipeline_id,))
+    if not pipe:
+        return {"ok": False, "error": "pipeline_not_found", "pipeline_id": pipeline_id}
+
+    latest = _latest_run(conn, pipeline_id)
+    assets = _assets_for_run(conn, latest.get("id"))
+    fr = load_pipeline_freshness(conn, pipeline_id=pipeline_id)
+    fr0 = fr[0] if fr else {}
+    operational = is_pipeline_operational(latest.get("end_time") or latest.get("start_time") or latest.get("created_at"), latest.get("status"))
+
+    last_run = None
+    if latest:
+        last_run = {
+            "run_id": latest.get("id"),
+            "status": latest.get("status"),
+            "start_time": json_val(latest.get("start_time")),
+            "end_time": json_val(latest.get("end_time")),
+            "duration_seconds": num(latest.get("duration")) if latest.get("duration") is not None else None,
+            "duration": format_duration(latest.get("duration")),
+            "tool_name": latest.get("tool_name"),
+            "rows_read": latest.get("rows_read"),
+            "rows_written": latest.get("rows_written"),
+            "error_class": latest.get("error_class"),
+            "failed_message": latest.get("failed_message"),
+            "failure_stage": latest.get("failure_stage"),
+        }
+
+    sources = [
+        {
+            "asset_role": a.get("asset_role"),
+            "database_name": a.get("database_name"),
+            "schema_name": a.get("schema_name"),
+            "object_name": a.get("object_name"),
+            "row_count": a.get("row_count"),
+            "last_updated_at": json_val(a.get("last_updated_at")),
+        }
+        for a in assets
+        if str(a.get("asset_role") or "").upper() == "SOURCE"
+    ]
+    targets = [
+        {
+            "asset_role": a.get("asset_role"),
+            "database_name": a.get("database_name"),
+            "schema_name": a.get("schema_name"),
+            "object_name": a.get("object_name"),
+            "row_count": a.get("row_count"),
+            "last_updated_at": json_val(a.get("last_updated_at")),
+        }
+        for a in assets
+        if str(a.get("asset_role") or "").upper() == "TARGET"
+    ]
+
+    rng = parse_range("all", None, None, None, None)
+    return envelope(
+        rng=rng,
+        filters_applied={"pipeline_id": pipeline_id},
+        items=[],
+        pipeline={
+            "pipeline_id": pipe.get("pipeline_id"),
+            "pipeline_name": pipe.get("pipeline_name"),
+            "description": pipe.get("description"),
+            "tenant_id": pipe.get("tenant_id"),
+            "is_active": operational,
+            "activity": "Active" if operational else "Inactive",
+            "is_sync_default": bool(pipe.get("is_active")),
+            "source": {
+                "tool": pipe.get("source_tool"),
+                "instance_id": pipe.get("source_instance_id"),
+                "schema": pipe.get("source_schema"),
+            },
+            "etl": {
+                "tool": pipe.get("etl_tool"),
+                "instance_id": pipe.get("etl_instance_id"),
+            },
+            "target": {
+                "tool": pipe.get("target_tool"),
+                "instance_id": pipe.get("target_instance_id"),
+                "schema": pipe.get("target_schema"),
+            },
+            "created_at": json_val(pipe.get("created_at")),
+            "updated_at": json_val(pipe.get("updated_at")),
+        },
+        last_run=last_run,
+        source_assets=sources,
+        target_assets=targets,
+        freshness=fr0,
+        summary={
+            "pipeline_id": pipe.get("pipeline_id"),
+            "pipeline_name": pipe.get("pipeline_name"),
+            "activity": "Active" if operational else "Inactive",
+            "last_run_status": (last_run or {}).get("status"),
+            "last_run_at": (last_run or {}).get("end_time") or (last_run or {}).get("start_time"),
+            "source_tool": pipe.get("source_tool"),
+            "etl_tool": pipe.get("etl_tool"),
+            "target_tool": pipe.get("target_tool"),
+        },
+    )
 
 
 def build_pipeline_runs(

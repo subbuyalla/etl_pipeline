@@ -57,11 +57,48 @@ Rules for frontend:
 
 Previous-period deltas use a window of equal length immediately before the current range.
 
+## Pipeline catalog + detail (call these for list → click)
+
+**`GET /api/v1/pipelines/catalog`** — lean list for the UI to click:
+
+```json
+{
+  "ok": true,
+  "items": [
+    {
+      "pipeline_id": "ae28a22e-...",
+      "pipeline_name": "hr_etl",
+      "is_active": true,
+      "activity": "Active",
+      "tool": "dbt"
+    }
+  ]
+}
+```
+
+Optional: `?q=hr`
+
+**`GET /api/v1/pipelines/{pipeline_id}`** — full details after click (source / etl / target + last run).
+
+`GET /api/v1/filters` still returns presets/statuses/tools (and pipelines) for other dropdowns.
+
+`is_active` is **operational**, not the Sync default:
+
+- **Active** (`is_active: true`): currently `running`, or last run (success or fail) within `ACTIVITY_LOOKBACK_HOURS` (default **168** = 7 days)
+- **Inactive**: never ran, or last activity older than that window
+- A recent **failed** run is still Active (the job is operating; health is a separate field)
+- Freshness SLA stays `DEFAULT_FRESHNESS_SLA_HOURS` (24h) — that is data delay, not Active/Inactive
+- `is_sync_default` is the attach pointer (which pipeline Sync uses if none is named)
+- Calling the catalog API also writes `obs_pipelines.is_operational` so metadata matches the dashboard
+
 ## Routes
 
 | Method | Path | Screen |
 |--------|------|--------|
 | GET | `/api/v1/health` | Health |
+| GET | `/api/v1/filters` | Filter dropdown catalog |
+| GET | `/api/v1/pipelines/catalog` | Pipeline id + name list |
+| GET | `/api/v1/pipelines/{pipeline_id}` | Pipeline full detail |
 | GET | `/api/v1/overview` | Overview (full) |
 | GET | `/api/v1/overview/kpis` | Overview KPIs |
 | GET | `/api/v1/overview/charts` | Overview charts |
@@ -69,7 +106,7 @@ Previous-period deltas use a window of equal length immediately before the curre
 | GET | `/api/v1/overview/recent-incidents` | Recent incidents |
 | GET | `/api/v1/overview/pipelines` | Overview table |
 | GET | `/api/v1/pipelines` | Pipelines list |
-| GET | `/api/v1/pipelines/{pipeline_id}` | Pipeline detail |
+| GET | `/api/v1/pipelines/{pipeline_id}` | Pipeline full detail |
 | GET | `/api/v1/pipelines/{pipeline_id}/runs` | Pipeline runs |
 | GET | `/api/v1/observability/freshness` | Freshness |
 | GET | `/api/v1/observability/volume` | Volume |
@@ -127,6 +164,7 @@ Legacy (unchanged): `GET /v1/dashboard/overview`.
 |-----|---------|---------|
 | `DB_HOST` / `DB_USER` / `DB_PASSWORD` / `DB_NAME` / `DB_PORT` | — | Metadata MySQL |
 | `DEFAULT_FRESHNESS_SLA_HOURS` | `24` | Freshness SLA |
+| `ACTIVITY_LOOKBACK_HOURS` | `168` | Pipeline Active if last run within this many hours |
 | `VOLUME_DROP_WARN_PCT` | `30` | Volume degraded |
 | `VOLUME_DROP_CRIT_PCT` | `60` | Volume failed |
 

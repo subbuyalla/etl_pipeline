@@ -89,6 +89,12 @@ def ensure_tables(conn) -> None:
             pass
         try:
             cur.execute(
+                "ALTER TABLE obs_pipelines ADD COLUMN is_operational TINYINT(1) NOT NULL DEFAULT 0"
+            )
+        except Exception:
+            pass
+        try:
+            cur.execute(
                 "ALTER TABLE obs_pipeline_runs ADD COLUMN rows_added BIGINT NULL"
             )
         except Exception:
@@ -543,6 +549,21 @@ def list_pipelines() -> list[dict]:
             return list(cur.fetchall() or [])
     finally:
         conn.close()
+
+
+def persist_operational_flags(conn, rows: list[dict]) -> None:
+    """Write derived Active/Inactive into obs_pipelines.is_operational (does not touch is_active Sync default)."""
+    ensure_tables(conn)
+    with conn.cursor() as cur:
+        for row in rows:
+            pid = row.get("pipeline_id")
+            if not pid:
+                continue
+            cur.execute(
+                "UPDATE obs_pipelines SET is_operational = %s WHERE pipeline_id = %s",
+                (1 if row.get("is_active") else 0, pid),
+            )
+    conn.commit()
 
 
 def upsert_pipeline(pipeline: dict, *, make_active: bool = True) -> dict[str, Any]:

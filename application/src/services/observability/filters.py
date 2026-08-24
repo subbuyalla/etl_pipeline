@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Optional
 
-from application.src.store.meta_mysql import get_connection
+from application.src.store.meta_mysql import get_connection, persist_operational_flags
 
 PRESETS: dict[str, Optional[int]] = {
     "15m": 0,  # minutes handled specially
@@ -61,6 +61,14 @@ def pct(numerator: float, denominator: float) -> float | None:
     if not denominator:
         return None
     return round(100.0 * numerator / denominator, 1)
+
+
+def activity_lookback_hours() -> float:
+    """How recent a run must be for the pipeline to count as operating (Active)."""
+    try:
+        return float(os.getenv("ACTIVITY_LOOKBACK_HOURS") or "168")
+    except ValueError:
+        return 168.0
 
 
 def freshness_sla_hours() -> float:
@@ -298,6 +306,196 @@ def age_label(ts: Any, now: datetime | None = None) -> str | None:
         return f"{hours}h ago"
     days = hours // 24
     return f"{days}d ago"
+
+
+KNOWN_RUN_STATUSES = ["success", "failed", "running", "error", "cancelled"]
+KNOWN_PRESETS = [
+    {"id": "15m", "label": "Last 15 minutes"},
+    {"id": "24h", "label": "Last 24 hours"},
+    {"id": "7d", "label": "Last 7 days"},
+    {"id": "30d", "label": "Last 30 days"},
+    {"id": "all", "label": "All time"},
+]
+
+
+def _as_naive_dt(value: Any) -> datetime | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None) if value.tzinfo else value
+    text = str(value).replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=None) if parsed.tzinfo else parsed
+
+
+def is_pipeline_operational(
+    last_run_at: Any,
+    last_run_status: Any = None,
+    sla_hours: float | None = None,
+) -> bool:
+    """
+    Real-world Active vs Inactive:
+    - Active: currently running, or last run (success or fail) within SLA window
+    - Inactive: never ran, or last activity older than SLA
+    A recent failed run is still Active (unhealthy, but the pipeline is operating).
+    """
+    status = str(last_run_status or "").strip().lower()
+    if status == "running":
+        return True
+    ts = _as_naive_dt(last_run_at)
+    if ts is None:
+        return False
+    hours = sla_hours if sla_hours is not None else activity_lookback_hours()
+    lag_hours = (utc_now() - ts).total_seconds() / 3600.0
+    return lag_hours <= max(hours, 0)
+
+
+def load_pipeline_activity(conn, *, persist: bool = True) -> list[dict[str, Any]]:
+    sla = activity_lookback_hours()
+    rows = fetchall(
+        conn,
+        """
+        SELECT
+          p.pipeline_id,
+          p.pipeline_name,
+          p.etl_tool,
+          p.is_active AS is_sync_default,
+          lr.last_run_at,
+          lr.last_run_status
+        FROM obs_pipelines p
+        LEFT JOIN (
+          SELECT r.pipeline_id, r.status AS last_run_status,
+                 COALESCE(r.end_time, r.start_time, r.created_at) AS last_run_at
+          FROM obs_pipeline_runs r
+          INNER JOIN (
+            SELECT pipeline_id, MAX(COALESCE(end_time, start_time, created_at)) AS max_ts
+            FROM obs_pipeline_runs
+            GROUP BY pipeline_id
+          ) m
+            ON m.pipeline_id = r.pipeline_id
+           AND COALESCE(r.end_time, r.start_time, r.created_at) = m.max_ts
+        ) lr ON lr.pipeline_id = p.pipeline_id
+        ORDER BY p.pipeline_name ASC, p.pipeline_id ASC
+        """,
+    )
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for r in rows:
+        pid = str(r.get("pipeline_id") or "")
+        if not pid or pid in seen:
+            continue
+        seen.add(pid)
+        operational = is_pipeline_operational(r.get("last_run_at"), r.get("last_run_status"), sla)
+        out.append(
+            {
+                "pipeline_id": pid,
+                "pipeline_name": str(r.get("pipeline_name") or pid),
+                "is_active": operational,
+                "activity": "Active" if operational else "Inactive",
+                "is_sync_default": bool(r.get("is_sync_default")),
+                "tool": r.get("etl_tool") or None,
+                "last_run_at": json_val(r.get("last_run_at")),
+                "last_run_status": (str(r.get("last_run_status")).lower() if r.get("last_run_status") else None),
+                "sla_hours": sla,
+            }
+        )
+    if persist and out:
+        persist_operational_flags(conn, out)
+    return out
+
+
+def list_filter_pipelines(conn, q: Optional[str] = None) -> list[dict[str, Any]]:
+    """Pipeline dropdown: id, name, and real-world Active/Inactive from last run."""
+    items = load_pipeline_activity(conn, persist=True)
+    if q and q.strip():
+        needle = q.strip().lower()
+        items = [
+            i
+            for i in items
+            if needle in i["pipeline_id"].lower() or needle in i["pipeline_name"].lower()
+        ]
+    return items
+
+
+def _distinct_strings(conn, sql: str, params: list | tuple | None = None) -> list[str]:
+    seen: list[str] = []
+    for row in fetchall(conn, sql, params):
+        val = row.get("v")
+        if val is None:
+            continue
+        s = str(val).strip()
+        if s and s.lower() not in {x.lower() for x in seen}:
+            seen.append(s)
+    return seen
+
+
+def build_filter_catalog(conn, q: Optional[str] = None) -> dict[str, Any]:
+    """All filter options the UI needs to populate dropdowns before clicking."""
+    rng = parse_range("all", None, None, None, None)
+    pipelines = list_filter_pipelines(conn, q=q)
+    db_statuses = _distinct_strings(
+        conn,
+        """
+        SELECT DISTINCT LOWER(TRIM(status)) AS v
+        FROM obs_pipeline_runs
+        WHERE status IS NOT NULL AND TRIM(status) <> ''
+        ORDER BY v
+        """,
+    )
+    statuses = []
+    for s in KNOWN_RUN_STATUSES + db_statuses:
+        if s.lower() not in {x.lower() for x in statuses}:
+            statuses.append(s.lower())
+    tools = _distinct_strings(
+        conn,
+        """
+        SELECT v FROM (
+          SELECT DISTINCT etl_tool AS v FROM obs_pipelines WHERE etl_tool IS NOT NULL AND TRIM(etl_tool) <> ''
+          UNION
+          SELECT DISTINCT source_tool AS v FROM obs_pipelines WHERE source_tool IS NOT NULL AND TRIM(source_tool) <> ''
+          UNION
+          SELECT DISTINCT target_tool AS v FROM obs_pipelines WHERE target_tool IS NOT NULL AND TRIM(target_tool) <> ''
+          UNION
+          SELECT DISTINCT tool_name AS v FROM obs_pipeline_runs WHERE tool_name IS NOT NULL AND TRIM(tool_name) <> ''
+        ) t
+        ORDER BY v
+        """,
+    )
+    return envelope(
+        rng=rng,
+        filters_applied={"q": q},
+        items=pipelines,
+        pipelines=pipelines,
+        total=len(pipelines),
+        page=1,
+        page_size=len(pipelines) or 1,
+        presets=KNOWN_PRESETS,
+        statuses=[{"id": s, "label": s.capitalize()} for s in statuses],
+        tools=[{"id": t, "label": t} for t in tools],
+        freshness_statuses=[
+            {"id": "fresh", "label": "Fresh"},
+            {"id": "delayed", "label": "Delayed"},
+            {"id": "stale", "label": "Stale"},
+        ],
+        incident_statuses=[
+            {"id": "open", "label": "Open"},
+            {"id": "resolved", "label": "Resolved"},
+        ],
+        activity_statuses=[
+            {"id": "active", "label": "Active"},
+            {"id": "inactive", "label": "Inactive"},
+        ],
+        query_params={
+            "pipeline_id": "Comma-separated pipeline_id values from items[].pipeline_id",
+            "pipeline_name": "Comma-separated pipeline_name values from items[].pipeline_name",
+            "status": "Comma-separated run statuses from statuses[].id",
+            "tool": "Comma-separated tool ids from tools[].id",
+            "preset": "One of presets[].id",
+        },
+    )
 
 
 def delta_pct(current: float | None, previous: float | None) -> float | None:

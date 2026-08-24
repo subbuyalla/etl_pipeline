@@ -10,12 +10,14 @@ from fastapi import APIRouter, HTTPException, Query
 
 from application.src.api.schemas import make_kpi
 from application.src.services.observability.filters import (
+    build_filter_catalog,
     build_run_where,
     envelope,
     fetchall,
     fetchone,
     format_duration,
     json_val,
+    list_filter_pipelines,
     num,
     parse_range,
 )
@@ -35,6 +37,7 @@ from application.src.services.observability.overview import (
     build_overview_charts,
     build_overview_health,
     build_overview_kpis,
+    build_pipeline_detail,
     build_pipeline_monitoring,
     build_pipeline_runs,
     build_pipelines_list,
@@ -96,6 +99,21 @@ def api_v1_health() -> dict[str, Any]:
         return {"ok": True, "status": "ok", "database": "connected"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Database unavailable: {e}") from e
+    finally:
+        conn.close()
+
+
+# =============================================================================
+# Filter lookups (status/tool/presets; pipelines live under /pipelines/catalog)
+# =============================================================================
+
+@router.get("/filters", summary="All filter options (pipelines, status, tool, presets)")
+def filter_catalog(
+    q: Optional[str] = Query(None, description="Optional search on pipeline id or name"),
+) -> dict[str, Any]:
+    conn = _conn()
+    try:
+        return build_filter_catalog(conn, q=q)
     finally:
         conn.close()
 
@@ -289,6 +307,27 @@ def overview_pipelines(
 # Pipelines
 # =============================================================================
 
+@router.get("/pipelines/catalog", summary="Pipeline id + name list (for dropdown / click)")
+def pipelines_catalog(
+    q: Optional[str] = Query(None, description="Optional search on pipeline id or name"),
+) -> dict[str, Any]:
+    conn = _conn()
+    try:
+        rng = parse_range("all", None, None, None, None)
+        items = list_filter_pipelines(conn, q=q)
+        return envelope(
+            rng=rng,
+            filters_applied={"q": q},
+            items=items,
+            pipelines=items,
+            total=len(items),
+            page=1,
+            page_size=len(items) or 1,
+        )
+    finally:
+        conn.close()
+
+
 @router.get("/pipelines", summary="Pipelines list + KPI strip")
 def pipelines_list(
     preset: Optional[str] = Query("24h", description=_PRE),
@@ -318,11 +357,11 @@ def pipelines_list(
         conn.close()
 
 
-@router.get("/pipelines/{pipeline_id}", summary="Pipeline detail")
+@router.get("/pipelines/{pipeline_id}", summary="Full pipeline details by id")
 def pipeline_detail(pipeline_id: str) -> dict[str, Any]:
     conn = _conn()
     try:
-        data = build_lineage_detail(conn, pipeline_id)
+        data = build_pipeline_detail(conn, pipeline_id)
         if not data.get("ok", True) and data.get("error") == "pipeline_not_found":
             raise HTTPException(status_code=404, detail=f"Pipeline '{pipeline_id}' not found")
         return data
