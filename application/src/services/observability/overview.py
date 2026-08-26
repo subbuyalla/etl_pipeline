@@ -49,12 +49,143 @@ def _run_aggregates(conn, from_str: str, to_str: str, **filters) -> dict:
           SUM(CASE WHEN LOWER(COALESCE(status,'')) IN ('success','succeeded') THEN 1 ELSE 0 END) AS success_runs,
           SUM(CASE WHEN LOWER(COALESCE(status,'')) IN ('failed','error') THEN 1 ELSE 0 END) AS failed_runs,
           SUM(CASE WHEN LOWER(COALESCE(status,'')) = 'running' THEN 1 ELSE 0 END) AS running_runs,
+          SUM(COALESCE(duration, 0)) AS total_duration,
           AVG(duration) AS avg_duration
         FROM obs_pipeline_runs r
         {where}
         """,
         params,
     )
+
+
+def build_overview_kpis(conn, rng: dict, **filters) -> list[dict]:
+    cur = _run_aggregates(conn, rng["from_str"], rng["to_str"], **filters)
+    prev = _run_aggregates(conn, rng["prev_from_str"], rng["prev_to_str"], **filters)
+    pipe_n = int(num(fetchone(conn, "SELECT COUNT(*) AS n FROM obs_pipelines").get("n")))
+    total = num(cur.get("total_runs"))
+    success = num(cur.get("success_runs"))
+    failed = num(cur.get("failed_runs"))
+    rate = pct(success, total)
+    avg_dur = num(cur.get("avg_duration")) if cur.get("avg_duration") is not None else None
+    tot_dur = round(num(cur.get("total_duration")), 1)
+
+    prev_total = num(prev.get("total_runs"))
+    prev_success = num(prev.get("success_runs"))
+    prev_failed = num(prev.get("failed_runs"))
+    prev_rate = pct(prev_success, prev_total)
+    prev_avg = num(prev.get("avg_duration")) if prev.get("avg_duration") is not None else None
+
+    open_inc = [
+        i for i in list_derived_incidents(conn, include_resolved=False) if i.get("status") == "open"
+    ]
+    prev_open = list_derived_incidents(
+        conn,
+        from_str=rng["prev_from_str"],
+        to_str=rng["prev_to_str"],
+        include_resolved=False,
+    )
+    prev_open_n = sum(1 for i in prev_open if i.get("status") == "open")
+
+    failed_pipelines = len(open_inc)
+    fail_rate = round(100.0 * failed / total, 1) if total else 0.0
+
+    return [
+        make_kpi(
+            id="total_pipelines",
+            title="Total Pipelines",
+            value=pipe_n,
+            display=str(pipe_n),
+            subtext=f"{pipe_n} unique models registered",
+            description="Count of distinct ETL/ELT pipeline models registered in the metadata catalog.",
+            formula="Distinct Registered Pipeline Models",
+            calculation_note=f"{pipe_n} unique pipeline models configured and monitored.",
+        ),
+        make_kpi(
+            id="success_rate",
+            title="Successful Runs",
+            value=rate,
+            display=f"{rate}%" if rate is not None else "N/A",
+            delta=(
+                round(rate - prev_rate, 1)
+                if rate is not None and prev_rate is not None
+                else None
+            ),
+            delta_label="vs previous period",
+            subtext=f"{int(success)}/{int(total)} runs passed" if total else "0/0 runs passed",
+            description="Percentage of pipeline runs that completed successfully without errors in the selected window.",
+            formula="(Successful Runs ÷ Total Runs) × 100",
+            calculation_note=(
+                f"Calculated as ({int(success)} passed ÷ {int(total)} total runs) × 100 = {rate}% success rate."
+                if total
+                else "No pipeline execution runs found in the selected time window."
+            ),
+            available=rate is not None,
+            tone="ok" if (rate or 0) >= 80 else "warn",
+        ),
+        make_kpi(
+            id="total_runs",
+            title="Total Execution Runs",
+            value=int(total),
+            display=str(int(total)),
+            delta=delta_pct(total, prev_total),
+            delta_label="vs previous period",
+            subtext="All recorded historical runs",
+            description="Total count of pipeline execution runs triggered within the selected time window.",
+            formula="Sum of All Execution Runs",
+            calculation_note=f"Total of {int(total)} pipeline execution runs recorded in the selected time window.",
+        ),
+        make_kpi(
+            id="failed_runs",
+            title="Failed Runs",
+            value=int(failed),
+            display=str(int(failed)),
+            delta=delta_pct(failed, prev_failed),
+            delta_label="vs previous period",
+            subtext=f"{int(failed)} execution failures" if failed else "0 failures",
+            description="Number of pipeline runs that encountered fatal errors or failed assertions.",
+            formula="(Failed Runs ÷ Total Runs) × 100",
+            calculation_note=(
+                f"Calculated as ({int(failed)} failed ÷ {int(total)} total runs) × 100 = {fail_rate}% failure rate."
+                if total
+                else "0 execution failures recorded."
+            ),
+            tone="bad" if failed else "ok",
+        ),
+        make_kpi(
+            id="avg_duration",
+            title="Avg Pipeline Duration",
+            value=avg_dur,
+            display=format_duration(avg_dur) or "N/A",
+            delta=delta_pct(avg_dur, prev_avg) if avg_dur is not None else None,
+            delta_label="vs previous period",
+            subtext="Average execution runtime",
+            description="Mean execution duration across completed pipeline runs.",
+            formula="Total Duration ÷ Completed Runs",
+            calculation_note=(
+                f"Calculated as total execution time ({tot_dur}s) ÷ {int(total)} completed runs = {format_duration(avg_dur)} average duration."
+                if avg_dur is not None and total
+                else "No completed pipeline execution runs with duration data in the selected window."
+            ),
+            available=avg_dur is not None,
+        ),
+        make_kpi(
+            id="active_incidents",
+            title="Active Incidents",
+            value=failed_pipelines,
+            display=str(failed_pipelines),
+            delta=delta_pct(float(failed_pipelines), float(prev_open_n)),
+            delta_label="vs previous period",
+            subtext=f"{failed_pipelines} pipelines requiring attention" if failed_pipelines else "All systems operational",
+            description="Pipelines currently in an unhealthy state due to recent execution failures.",
+            formula="Count of Pipelines with Latest Run Failed",
+            calculation_note=(
+                f"{failed_pipelines} pipeline(s) currently have an open failure status requiring attention."
+                if failed_pipelines
+                else "All monitored pipelines have successful latest runs."
+            ),
+            tone="bad" if failed_pipelines else "ok",
+        ),
+    ]
 
 
 def build_overview_charts(conn, rng: dict, **filters) -> dict:
@@ -333,129 +464,7 @@ def build_pipeline_monitoring(conn, rng: dict, **filters) -> list[dict]:
     return out
 
 
-def build_overview_kpis(conn, rng: dict, **filters) -> list[dict]:
-    cur = _run_aggregates(conn, rng["from_str"], rng["to_str"], **filters)
-    prev = _run_aggregates(conn, rng["prev_from_str"], rng["prev_to_str"], **filters)
-    pipe_n = int(num(fetchone(conn, "SELECT COUNT(*) AS n FROM obs_pipelines").get("n")))
-    total = num(cur.get("total_runs"))
-    success = num(cur.get("success_runs"))
-    failed = num(cur.get("failed_runs"))
-    rate = pct(success, total)
-    avg_dur = num(cur.get("avg_duration")) if cur.get("avg_duration") is not None else None
 
-    prev_total = num(prev.get("total_runs"))
-    prev_success = num(prev.get("success_runs"))
-    prev_failed = num(prev.get("failed_runs"))
-    prev_rate = pct(prev_success, prev_total)
-    prev_avg = num(prev.get("avg_duration")) if prev.get("avg_duration") is not None else None
-
-    open_inc = [
-        i for i in list_derived_incidents(conn, include_resolved=False) if i.get("status") == "open"
-    ]
-    prev_open = list_derived_incidents(
-        conn,
-        from_str=rng["prev_from_str"],
-        to_str=rng["prev_to_str"],
-        include_resolved=False,
-    )
-    prev_open_n = sum(1 for i in prev_open if i.get("status") == "open")
-
-    # Failed pipelines = distinct pipelines with latest failed (open incidents)
-    failed_pipelines = len(open_inc)
-
-    return [
-        make_kpi(
-            id="total_pipelines",
-            title="Total Pipelines",
-            value=pipe_n,
-            display=str(pipe_n),
-            subtext=f"{pipe_n} unique models registered",
-            description="Count of distinct ETL/ELT pipeline models registered in the metadata catalog.",
-            formula="COUNT(DISTINCT pipeline_id) FROM obs_pipelines",
-            calculation_note=f"{pipe_n} unique data pipelines configured and monitored across Snowflake and dbt.",
-        ),
-        make_kpi(
-            id="success_rate",
-            title="Successful Runs",
-            value=rate,
-            display=f"{rate}%" if rate is not None else "N/A",
-            delta=(
-                round(rate - prev_rate, 1)
-                if rate is not None and prev_rate is not None
-                else None
-            ),
-            delta_label="vs previous period",
-            subtext=f"{int(success)}/{int(total)} runs passed" if total else "0/0 runs passed",
-            description="Percentage of pipeline runs that completed successfully without errors in the selected window.",
-            formula="(successful_runs / total_runs) * 100",
-            calculation_note=(
-                f"Calculated from {int(success)} successful runs out of {int(total)} total recorded pipeline executions ({rate}% success rate)."
-                if total
-                else "No execution runs found in the selected time window."
-            ),
-            available=rate is not None,
-            tone="ok" if (rate or 0) >= 80 else "warn",
-        ),
-        make_kpi(
-            id="total_runs",
-            title="Total Execution Runs",
-            value=int(total),
-            display=str(int(total)),
-            delta=delta_pct(total, prev_total),
-            delta_label="vs previous period",
-            subtext="All recorded historical runs",
-            description="Total count of pipeline execution runs triggered within the selected time window.",
-            formula="COUNT(*) FROM obs_pipeline_runs",
-            calculation_note=f"Total of {int(total)} execution runs recorded across all active pipelines.",
-        ),
-        make_kpi(
-            id="failed_runs",
-            title="Failed Runs",
-            value=int(failed),
-            display=str(int(failed)),
-            delta=delta_pct(failed, prev_failed),
-            delta_label="vs previous period",
-            subtext=f"{int(failed)} execution failures" if failed else "0 failures",
-            description="Number of pipeline runs that encountered fatal errors or failed assertions.",
-            formula="COUNT(*) FROM obs_pipeline_runs WHERE status = 'failed'",
-            calculation_note=(
-                f"{int(failed)} runs failed out of {int(total)} total executions ({round(100 * failed / total, 1) if total else 0}% failure rate)."
-                if total
-                else "0 failed executions recorded."
-            ),
-            tone="bad" if failed else "ok",
-        ),
-        make_kpi(
-            id="avg_duration",
-            title="Avg Pipeline Duration",
-            value=avg_dur,
-            display=format_duration(avg_dur) or "N/A",
-            delta=delta_pct(avg_dur, prev_avg) if avg_dur is not None else None,
-            delta_label="vs previous period",
-            subtext="Average execution runtime",
-            description="Mean execution duration across completed pipeline runs.",
-            formula="AVG(duration) FROM obs_pipeline_runs",
-            calculation_note=(
-                f"Average runtime of {format_duration(avg_dur) or '0s'} computed across {int(total)} pipeline execution runs."
-                if avg_dur is not None
-                else "No run duration data available."
-            ),
-            available=avg_dur is not None,
-        ),
-        make_kpi(
-            id="active_incidents",
-            title="Active Incidents",
-            value=failed_pipelines,
-            display=str(failed_pipelines),
-            delta=delta_pct(float(failed_pipelines), float(prev_open_n)),
-            delta_label="vs previous period",
-            subtext=f"{failed_pipelines} pipelines requiring attention" if failed_pipelines else "All systems operational",
-            description="Pipelines currently in an unhealthy state due to recent execution failures.",
-            formula="COUNT(DISTINCT pipeline_id) WHERE latest_run_status = 'failed'",
-            calculation_note=f"{failed_pipelines} pipelines have unresolved failures in their latest execution.",
-            tone="bad" if failed_pipelines else "ok",
-        ),
-    ]
 
 
 def build_overview(
