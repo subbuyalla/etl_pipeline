@@ -1,5 +1,0 @@
-project_name,unique_id,invocation_id,status,execution_time,message,resource_type,generated_at
-analytics,model.analytics.fct_orders,inv-csv-001,success,1.25,,model,2026-07-24T10:00:00Z
-analytics,model.analytics.dim_customer,inv-csv-001,success,0.80,,model,2026-07-24T10:00:00Z
-analytics,test.analytics.not_null_fct_orders_id,inv-csv-001,error,0.40,Got 12 results configured to fail if != 0,test,2026-07-24T10:00:00Z
-analytics,model.analytics.stg_orders,inv-csv-002,error,0.15,Compilation Error in model stg_orders,model,2026-07-24T11:00:00Z
