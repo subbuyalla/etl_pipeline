@@ -33,6 +33,10 @@ class KpiItem(BaseModel):
     display: str = "N/A"
     delta: Optional[float] = None
     delta_label: Optional[str] = None
+    subtext: Optional[str] = None
+    description: Optional[str] = None
+    formula: Optional[str] = None
+    calculation_note: Optional[str] = None
     tone: str = "neutral"  # neutral | ok | warn | bad
     available: bool = True
 
@@ -66,6 +70,10 @@ def make_kpi(
     display: str | None = None,
     delta: float | None = None,
     delta_label: str | None = None,
+    subtext: str | None = None,
+    description: str | None = None,
+    formula: str | None = None,
+    calculation_note: str | None = None,
     tone: str = "neutral",
     available: bool = True,
 ) -> dict[str, Any]:
@@ -77,6 +85,10 @@ def make_kpi(
             "display": "N/A",
             "delta": None,
             "delta_label": None,
+            "subtext": subtext or "Data unavailable",
+            "description": description or f"No data recorded for {title.lower()}.",
+            "formula": formula,
+            "calculation_note": calculation_note or "Calculation unavailable due to missing records.",
             "tone": "neutral",
             "available": False,
         }
@@ -92,6 +104,10 @@ def make_kpi(
         "display": display,
         "delta": delta,
         "delta_label": delta_label,
+        "subtext": subtext,
+        "description": description,
+        "formula": formula,
+        "calculation_note": calculation_note,
         "tone": tone,
         "available": True,
     }
