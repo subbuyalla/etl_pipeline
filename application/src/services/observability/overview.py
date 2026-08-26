@@ -96,9 +96,9 @@ def build_overview_kpis(conn, rng: dict, **filters) -> list[dict]:
             value=pipe_n,
             display=str(pipe_n),
             subtext=f"{pipe_n} unique models registered",
-            description="Count of distinct ETL/ELT pipeline models registered in the metadata catalog.",
+            description="Distinct pipeline models registered and monitored in the metadata catalog.",
             formula="Distinct Registered Pipeline Models",
-            calculation_note=f"{pipe_n} unique pipeline models configured and monitored.",
+            calculation_note=f"{pipe_n} unique data pipeline models actively monitored across Snowflake and dbt.",
         ),
         make_kpi(
             id="success_rate",
@@ -112,12 +112,12 @@ def build_overview_kpis(conn, rng: dict, **filters) -> list[dict]:
             ),
             delta_label="vs previous period",
             subtext=f"{int(success)}/{int(total)} runs passed" if total else "0/0 runs passed",
-            description="Percentage of pipeline runs that completed successfully without errors in the selected window.",
+            description="Overall pipeline reliability and execution pass rate in the selected window.",
             formula="(Successful Runs ÷ Total Runs) × 100",
             calculation_note=(
-                f"Calculated as ({int(success)} passed ÷ {int(total)} total runs) × 100 = {rate}% success rate."
+                f"{int(success)} runs passed successfully out of {int(total)} total executions ({rate}% success rate)."
                 if total
-                else "No pipeline execution runs found in the selected time window."
+                else "No execution runs recorded in the selected time window."
             ),
             available=rate is not None,
             tone="ok" if (rate or 0) >= 80 else "warn",
@@ -130,9 +130,9 @@ def build_overview_kpis(conn, rng: dict, **filters) -> list[dict]:
             delta=delta_pct(total, prev_total),
             delta_label="vs previous period",
             subtext="All recorded historical runs",
-            description="Total count of pipeline execution runs triggered within the selected time window.",
-            formula="Sum of All Execution Runs",
-            calculation_note=f"Total of {int(total)} pipeline execution runs recorded in the selected time window.",
+            description="Total pipeline execution runs triggered in the selected window.",
+            formula="Total Pipeline Execution Runs",
+            calculation_note=f"{int(total)} total pipeline execution runs recorded across all active pipelines.",
         ),
         make_kpi(
             id="failed_runs",
@@ -142,10 +142,10 @@ def build_overview_kpis(conn, rng: dict, **filters) -> list[dict]:
             delta=delta_pct(failed, prev_failed),
             delta_label="vs previous period",
             subtext=f"{int(failed)} execution failures" if failed else "0 failures",
-            description="Number of pipeline runs that encountered fatal errors or failed assertions.",
+            description="Pipeline runs that encountered fatal errors or failed assertions.",
             formula="(Failed Runs ÷ Total Runs) × 100",
             calculation_note=(
-                f"Calculated as ({int(failed)} failed ÷ {int(total)} total runs) × 100 = {fail_rate}% failure rate."
+                f"{int(failed)} runs failed out of {int(total)} total executions ({fail_rate}% failure rate)."
                 if total
                 else "0 execution failures recorded."
             ),
@@ -162,7 +162,7 @@ def build_overview_kpis(conn, rng: dict, **filters) -> list[dict]:
             description="Mean execution duration across completed pipeline runs.",
             formula="Total Duration ÷ Completed Runs",
             calculation_note=(
-                f"Calculated as total execution time ({tot_dur}s) ÷ {int(total)} completed runs = {format_duration(avg_dur)} average duration."
+                f"Average runtime of {format_duration(avg_dur) or '0s'} computed across {int(total)} pipeline execution runs."
                 if avg_dur is not None and total
                 else "No completed pipeline execution runs with duration data in the selected window."
             ),
@@ -175,13 +175,13 @@ def build_overview_kpis(conn, rng: dict, **filters) -> list[dict]:
             display=str(failed_pipelines),
             delta=delta_pct(float(failed_pipelines), float(prev_open_n)),
             delta_label="vs previous period",
-            subtext=f"{failed_pipelines} pipelines requiring attention" if failed_pipelines else "All systems operational",
-            description="Pipelines currently in an unhealthy state due to recent execution failures.",
+            subtext=f"{failed_pipelines} pipeline{'s' if failed_pipelines != 1 else ''} requiring attention" if failed_pipelines else "All systems operational",
+            description="Monitored pipelines currently in an unhealthy state due to recent execution failures.",
             formula="Count of Pipelines with Latest Run Failed",
             calculation_note=(
-                f"{failed_pipelines} pipeline(s) currently have an open failure status requiring attention."
+                f"{failed_pipelines} pipeline{'s' if failed_pipelines != 1 else ''} require{'s' if failed_pipelines == 1 else ''} attention due to an unresolved latest execution failure."
                 if failed_pipelines
-                else "All monitored pipelines have successful latest runs."
+                else "All monitored pipelines completed their latest run successfully."
             ),
             tone="bad" if failed_pipelines else "ok",
         ),
