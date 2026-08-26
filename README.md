@@ -19,9 +19,8 @@ FastAPI backend service powering the ETL Observability Dashboard.
 ```text
 ├── .env                              # Environment configuration (DB credentials)
 ├── requirements.txt                  # Python dependencies
-├── app.py                            # FastAPI application entrypoint
-├── api/
-│   └── index.py                      # Vercel / serverless entrypoint
+├── pyproject.toml                    # Modern project metadata & Vercel entrypoint
+├── app.py                            # Primary FastAPI entrypoint (app:app)
 └── application/
     └── src/
         ├── app.py                    # App configuration & CORS
