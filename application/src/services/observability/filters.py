@@ -92,6 +92,50 @@ def volume_drop_crit_pct() -> float:
         return 60.0
 
 
+def _parse_flexible_date(date_str: Any, default_time: str = "00:00:00") -> datetime | None:
+    if not date_str or not str(date_str).strip():
+        return None
+    import re
+    s = str(date_str).strip()
+    if "T" in s:
+        s = s.replace("T", " ").replace("Z", "").split(".")[0]
+        try:
+            return datetime.fromisoformat(s)
+        except Exception:
+            pass
+
+    # Check DD-MM-YYYY or DD/MM/YYYY
+    match_dmy = re.match(r"^(\d{1,2})[-/](\d{1,2})[-/](\d{4})(?:\s+(\d{1,2}:\d{2}(?::\d{2})?))?$", s)
+    if match_dmy:
+        day, month, year, time_part = match_dmy.groups()
+        t = time_part or default_time
+        parts = [int(x) for x in t.split(":")]
+        while len(parts) < 3:
+            parts.append(0)
+        try:
+            return datetime(int(year), int(month), int(day), *parts[:3])
+        except Exception:
+            pass
+
+    # Check YYYY-MM-DD or YYYY/MM/DD
+    match_ymd = re.match(r"^(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:\s+(\d{1,2}:\d{2}(?::\d{2})?))?$", s)
+    if match_ymd:
+        year, month, day, time_part = match_ymd.groups()
+        t = time_part or default_time
+        parts = [int(x) for x in t.split(":")]
+        while len(parts) < 3:
+            parts.append(0)
+        try:
+            return datetime(int(year), int(month), int(day), *parts[:3])
+        except Exception:
+            pass
+
+    try:
+        return datetime.fromisoformat(f"{s} {default_time}".strip())
+    except Exception:
+        return None
+
+
 def parse_range(
     preset: Optional[str] = None,
     start_date: Optional[str] = None,
@@ -102,18 +146,16 @@ def parse_range(
     """
     Resolve query window to absolute from/to datetimes (naive UTC, MySQL style).
     Returns previous window of equal length for delta comparisons.
+    Handles YYYY-MM-DD, DD-MM-YYYY, ISO strings, and standard presets.
     """
     now = utc_now()
     preset_key = (preset or "").strip().lower() or None
 
-    if start_date and str(start_date).strip():
-        st = (start_time or "").strip() or "00:00:00"
-        et = (end_time or "").strip() or "23:59:59"
-        from_dt = datetime.fromisoformat(f"{start_date.strip()} {st}")
-        if end_date and str(end_date).strip():
-            to_dt = datetime.fromisoformat(f"{end_date.strip()} {et}")
-        else:
-            to_dt = now
+    parsed_start = _parse_flexible_date(start_date, (start_time or "").strip() or "00:00:00")
+    if parsed_start:
+        from_dt = parsed_start
+        parsed_end = _parse_flexible_date(end_date, (end_time or "").strip() or "23:59:59")
+        to_dt = parsed_end if parsed_end else now
         duration = max(to_dt - from_dt, timedelta(seconds=1))
         prev_to = from_dt
         prev_from = from_dt - duration
@@ -134,7 +176,6 @@ def parse_range(
         prev_to = from_dt
         prev_from = from_dt - timedelta(minutes=15)
     elif preset_key == "all" or preset_key is None and not start_date:
-        # Default dashboard window = 24h when nothing specified
         if preset_key == "all":
             from_dt = datetime(1970, 1, 1)
             prev_from = from_dt

@@ -54,18 +54,20 @@ def _conn():
 
 
 def _common_filters(
-    preset: Optional[str],
-    start_date: Optional[str],
-    end_date: Optional[str],
-    start_time: Optional[str],
-    end_time: Optional[str],
-    pipeline_name: Optional[str],
-    pipeline_id: Optional[str],
-    status: Optional[str],
-    tool: Optional[str],
+    preset: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
+    pipeline_name: Optional[str] = None,
+    pipeline_id: Optional[str] = None,
+    status: Optional[str] = None,
+    tool: Optional[str] = None,
+    range: Optional[str] = None,
 ) -> dict[str, Any]:
+    resolved_preset = preset if (preset and preset != "24h") else (range or preset or "24h")
     return dict(
-        preset=preset,
+        preset=resolved_preset,
         start_date=start_date,
         end_date=end_date,
         start_time=start_time,
