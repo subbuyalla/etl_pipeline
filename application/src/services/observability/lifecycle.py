@@ -26,13 +26,41 @@ from application.src.services.observability.quality import infer_dimension
 _SQL_KINDS = {"null_check", "null_pct", "unique_check", "unique_violation", "duplicate_check", "duplicate_count", "custom_sql"}
 
 
+def _write_check_result(
+    cur,
+    *,
+    monitor_id: str,
+    pipeline_id: str,
+    status: str,
+    severity: str,
+    message: str,
+    observed: dict[str, Any],
+    now: datetime,
+) -> None:
+    """Keep one latest result per monitor (avoids poller duplicate rows in quality aggregates)."""
+    cur.execute(
+        "DELETE FROM obs_check_results WHERE monitor_id = %s AND pipeline_id = %s",
+        (monitor_id, pipeline_id),
+    )
+    cid = str(uuid.uuid4())
+    cur.execute(
+        """
+        INSERT INTO obs_check_results (
+          check_id, monitor_id, pipeline_id, status, severity, message, observed_json, checked_at
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+        """,
+        (cid, monitor_id, pipeline_id, status, severity, message, json.dumps(observed), now),
+    )
+
+
 def _latest_successful_target_rows(conn, pipeline_id: str) -> list[dict]:
-    """Two most recent successful runs with summed TARGET row counts."""
+    """Two most recent successful runs with summed TARGET row counts (NULL = unknown)."""
     return fetchall(
         conn,
         """
         SELECT r.id AS run_id,
-               COALESCE(SUM(a.row_count), 0) AS target_rows,
+               SUM(a.row_count) AS target_rows,
+               SUM(CASE WHEN a.row_count IS NOT NULL THEN 1 ELSE 0 END) AS rows_known,
                COALESCE(r.end_time, r.start_time, r.created_at) AS run_at
         FROM obs_pipeline_runs r
         LEFT JOIN obs_run_assets a
@@ -219,9 +247,137 @@ def ensure_default_monitors(conn) -> int:
     return created
 
 
+def _default_unique_rule_target(conn, pipeline_id: str) -> tuple[str, str, str] | None:
+    """Best-effort dataset + id-like column for seed UNIQUE rule."""
+    from application.src.store.meta_mysql import get_tool, list_pipeline_bindings
+
+    bindings = [
+        b for b in list_pipeline_bindings(conn, pipeline_id)
+        if str(b.get("role") or "").upper() == "TARGET"
+    ]
+    tool = None
+    if bindings:
+        tool = get_tool(str(bindings[0].get("instance_id") or ""))
+    if tool is None:
+        pipe = fetchone(
+            conn,
+            "SELECT target_instance_id FROM obs_pipelines WHERE pipeline_id=%s",
+            (pipeline_id,),
+        )
+        iid = (pipe or {}).get("target_instance_id")
+        if iid:
+            tool = get_tool(str(iid))
+
+    db = schema = table = ""
+    if tool:
+        cfg = tool.get("config") or {}
+        if isinstance(cfg, str):
+            try:
+                cfg = json.loads(cfg)
+            except json.JSONDecodeError:
+                cfg = {}
+        db = str(cfg.get("database_id") or cfg.get("database") or cfg.get("project_id") or "")
+        schema = str(cfg.get("schema") or cfg.get("dataset") or "")
+        tables = cfg.get("tables") or []
+        if tables:
+            table = str(tables[0])
+
+    if not table:
+        asset = fetchone(
+            conn,
+            """
+            SELECT database_name, schema_name, object_name
+            FROM obs_run_assets
+            WHERE pipeline_id = %s AND UPPER(COALESCE(asset_role, '')) = 'TARGET'
+            ORDER BY COALESCE(last_altered_at, created_at) DESC
+            LIMIT 1
+            """,
+            (pipeline_id,),
+        )
+        if asset:
+            db = db or str(asset.get("database_name") or "")
+            schema = schema or str(asset.get("schema_name") or "")
+            table = str(asset.get("object_name") or "")
+
+    if not db or not schema or not table:
+        return None
+
+    dataset_id = f"{db}.{schema}.{table}".upper()
+    cols = fetchall(
+        conn,
+        """
+        SELECT column_name, ordinal_position
+        FROM obs_run_columns
+        WHERE pipeline_id = %s
+          AND UPPER(COALESCE(asset_role, '')) = 'TARGET'
+          AND UPPER(object_name) = UPPER(%s)
+        ORDER BY ordinal_position, column_name
+        """,
+        (pipeline_id, table),
+    )
+    column_name = ""
+    for c in cols:
+        name = str(c.get("column_name") or "")
+        upper = name.upper()
+        if upper.endswith("_ID") or upper == "ID":
+            column_name = name
+            break
+    if not column_name and cols:
+        column_name = str(cols[0].get("column_name") or "")
+    if not column_name:
+        return None
+    return dataset_id, column_name, table
+
+
+def ensure_default_dq_rules(conn, *, pipeline_id: str | None = None) -> int:
+    """Seed a UNIQUE rule per pipeline when TARGET metadata is available."""
+    from application.src.store.meta_mysql import upsert_dq_rule
+
+    sql = "SELECT pipeline_id FROM obs_pipelines"
+    params: tuple[Any, ...] = ()
+    if pipeline_id:
+        sql += " WHERE pipeline_id = %s"
+        params = (pipeline_id,)
+    pipes = fetchall(conn, sql, params)
+    created = 0
+    for p in pipes:
+        pid = str(p.get("pipeline_id") or "")
+        existing = fetchone(
+            conn,
+            """
+            SELECT rule_id FROM obs_dq_rules
+            WHERE pipeline_id = %s AND rule_type = 'UNIQUE' LIMIT 1
+            """,
+            (pid,),
+        )
+        if existing:
+            continue
+        target = _default_unique_rule_target(conn, pid)
+        if not target:
+            continue
+        dataset_id, column_name, table_name = target
+        upsert_dq_rule(
+            conn,
+            {
+                "rule_id": f"seed:unique:{pid}"[:64],
+                "pipeline_id": pid,
+                "rule_name": f"Unique {column_name} on {table_name}",
+                "rule_type": "UNIQUE",
+                "dataset_id": dataset_id,
+                "column_name": column_name,
+                "dimension": "uniqueness",
+                "severity": "high",
+                "evaluation_trigger": "poller",
+            },
+        )
+        created += 1
+    return created
+
+
 def evaluate_monitors(conn) -> dict[str, Any]:
     """Run enabled monitors; write check_results, upsert alerts, sync incidents from failures."""
     ensure_default_monitors(conn)
+    ensure_default_dq_rules(conn)
     monitors = fetchall(conn, "SELECT * FROM obs_monitors WHERE is_enabled=1")
     fresh = {r["pipeline_id"]: r for r in load_pipeline_freshness(conn)}
     open_fail = {
@@ -254,7 +410,13 @@ def evaluate_monitors(conn) -> dict[str, Any]:
                 lag = fr.get("lag_hours")
                 sla = float(cfg.get("sla_hours") or freshness_sla_hours())
                 observed = {"lag_hours": lag, "sla_hours": sla, "freshness": fr.get("status")}
-                if lag is None or float(lag) > sla * 2:
+                if lag is None:
+                    status, severity, message = (
+                        "warn",
+                        "low",
+                        "freshness pending (no TARGET timestamp)",
+                    )
+                elif float(lag) > sla * 2:
                     status, severity, message = "fail", "critical", f"Stale: lag={lag}h sla={sla}h"
                 elif float(lag) > sla:
                     status, severity, message = "fail", "high", f"Delayed: lag={lag}h sla={sla}h"
@@ -264,15 +426,28 @@ def evaluate_monitors(conn) -> dict[str, Any]:
                     status, severity, message = "fail", "critical", "Latest pipeline run failed"
             elif kind == "volume_drop":
                 samples = _latest_successful_target_rows(conn, pid)
-                cur_rows = num((samples[0] if samples else {}).get("target_rows"))
-                prev_rows = num((samples[1] if len(samples) > 1 else {}).get("target_rows"))
+                cur_sample = samples[0] if samples else {}
+                prev_sample = samples[1] if len(samples) > 1 else {}
+                cur_rows_raw = cur_sample.get("target_rows")
+                prev_rows_raw = prev_sample.get("target_rows")
+                cur_known = int(num(cur_sample.get("rows_known")))
+                prev_known = int(num(prev_sample.get("rows_known")))
+                cur_rows = num(cur_rows_raw) if cur_rows_raw is not None else None
+                prev_rows = num(prev_rows_raw) if prev_rows_raw is not None else None
                 observed = {
                     "latest_target_rows": cur_rows,
                     "previous_target_rows": prev_rows,
+                    "latest_rows_known": cur_known,
+                    "previous_rows_known": prev_known,
                 }
-                if len(samples) < 2 or prev_rows <= 0:
+                if len(samples) < 2:
                     status, message = "pass", "volume baseline pending (need 2 successful runs)"
+                elif cur_known == 0 or prev_known == 0:
+                    status, message = "pass", "volume count unknown (TARGET row_count unavailable)"
+                elif prev_rows is None or prev_rows <= 0:
+                    status, message = "pass", "volume baseline pending (prior run had no rows)"
                 else:
+                    assert cur_rows is not None
                     drop_pct = 100.0 * (prev_rows - cur_rows) / prev_rows
                     observed["drop_pct"] = round(drop_pct, 2)
                     crit = float(cfg.get("crit_pct") or volume_drop_crit_pct())
@@ -303,14 +478,15 @@ def evaluate_monitors(conn) -> dict[str, Any]:
                 else:
                     status, message = "pass", "no dbt test failures on latest run"
 
-            cid = str(uuid.uuid4())
-            cur.execute(
-                """
-                INSERT INTO obs_check_results (
-                  check_id, monitor_id, pipeline_id, status, severity, message, observed_json, checked_at
-                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
-                """,
-                (cid, m["monitor_id"], pid, status, severity, message, json.dumps(observed), now),
+            _write_check_result(
+                cur,
+                monitor_id=m["monitor_id"],
+                pipeline_id=pid,
+                status=status,
+                severity=severity,
+                message=message,
+                observed=observed,
+                now=now,
             )
             checks += 1
 

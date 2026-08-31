@@ -93,6 +93,33 @@ class SnowflakeConnector:
         except Exception as e:
             return {"ok": False, "message": str(e)}
 
+    def _fill_view_row_counts(self, rows: list[dict]) -> None:
+        """INFORMATION_SCHEMA omits ROW_COUNT for views; use COUNT(*) fallback."""
+        from application.src.connectors.validation import quote_ident_double
+
+        need_count = [
+            r
+            for r in rows
+            if r.get("table_type") in ("VIEW", "MATERIALIZED VIEW")
+            and r.get("row_count") is None
+        ]
+        for row in need_count:
+            db = str(row.get("database") or self.database_id or "")
+            schema = str(row.get("schema") or "")
+            table = str(row.get("table") or "")
+            if not db or not schema or not table:
+                continue
+            fqn = ".".join(
+                quote_ident_double(part) for part in (db, schema, table) if part
+            )
+            try:
+                self.cursor.execute(f"SELECT COUNT(*) FROM {fqn}")
+                counted = self.cursor.fetchone()
+                if counted and counted[0] is not None:
+                    row["row_count"] = int(counted[0])
+            except Exception:
+                continue
+
     def _fetch_tables(self) -> list[dict]:
         """
         Pull table metadata from the connected database.
@@ -142,6 +169,7 @@ class SnowflakeConnector:
                         "object_type": object_type,
                     }
                 )
+            self._fill_view_row_counts(rows)
             return rows
         finally:
             self.cursor.close()

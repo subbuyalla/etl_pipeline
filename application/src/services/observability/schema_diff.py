@@ -15,6 +15,7 @@ from application.src.services.observability.filters import (
     pct,
     utc_now,
 )
+from application.src.services.observability.rca_deltas import compute_schema_diffs
 
 
 def _success_runs_by_pipeline(conn) -> dict[str, list[dict]]:
@@ -39,7 +40,8 @@ def _columns_for_run(conn, run_id: str) -> list[dict]:
     return fetchall(
         conn,
         """
-        SELECT database_name, schema_name, object_name, column_name, data_type, ordinal_position
+        SELECT database_name, schema_name, object_name, column_name, data_type,
+               ordinal_position, asset_role
         FROM obs_run_columns
         WHERE run_id = %s AND UPPER(COALESCE(asset_role, '')) = 'TARGET'
         ORDER BY object_name, ordinal_position, column_name
@@ -48,16 +50,42 @@ def _columns_for_run(conn, run_id: str) -> list[dict]:
     )
 
 
-def _col_key(c: dict) -> tuple:
-    return (
-        str(c.get("database_name") or ""),
-        str(c.get("schema_name") or ""),
-        str(c.get("object_name") or ""),
-        str(c.get("column_name") or ""),
-    )
+def _diff_to_event(diff: dict, *, newer: dict, older: dict, pid: str, now) -> dict:
+    db = diff.get("database_name") or ""
+    schema = diff.get("schema_name") or ""
+    obj = diff.get("object_name") or ""
+    col = diff.get("column_name") or ""
+    change_type_raw = str(diff.get("change_type") or "")
+
+    if change_type_raw == "column_added":
+        change_type, impact = "add_column", "non_breaking"
+        summary = f"Added column {col} ({diff.get('data_type')})"
+    elif change_type_raw == "column_removed":
+        change_type, impact = "drop_column", "breaking"
+        summary = f"Dropped column {col} ({diff.get('data_type')})"
+    else:
+        change_type, impact = "modify_column", "breaking"
+        summary = (
+            f"Modified {col}: {diff.get('data_type_previous')} → {diff.get('data_type_current')}"
+        )
+
+    return {
+        "time": json_val(newer.get("ts")),
+        "age": age_label(newer.get("ts"), now),
+        "pipeline_id": pid,
+        "pipeline_name": newer.get("pipeline_name"),
+        "object_name": obj,
+        "dataset": f"{db}.{schema}.{obj}",
+        "change_type": change_type,
+        "impact": impact,
+        "summary": summary,
+        "from_run_id": older.get("id"),
+        "to_run_id": newer.get("id"),
+    }
 
 
 def compute_schema_changes(conn) -> list[dict]:
+    """Compare latest successful run vs prior success (same logic as RCA schema deltas)."""
     by_pipe = _success_runs_by_pipeline(conn)
     events: list[dict] = []
     now = utc_now()
@@ -67,67 +95,11 @@ def compute_schema_changes(conn) -> list[dict]:
             continue
         newer, older = runs[0], runs[1]
         new_cols = _columns_for_run(conn, newer["id"])
-        old_cols = _columns_for_run(conn, older["id"])
-        if not new_cols and not old_cols:
+        if not new_cols:
             continue
-
-        new_map = {_col_key(c): c for c in new_cols}
-        old_map = {_col_key(c): c for c in old_cols}
-
-        for key, c in new_map.items():
-            if key not in old_map:
-                events.append(
-                    {
-                        "time": json_val(newer.get("ts")),
-                        "age": age_label(newer.get("ts"), now),
-                        "pipeline_id": pid,
-                        "pipeline_name": newer.get("pipeline_name"),
-                        "object_name": c.get("object_name"),
-                        "dataset": f"{c.get('database_name')}.{c.get('schema_name')}.{c.get('object_name')}",
-                        "change_type": "add_column",
-                        "impact": "non_breaking",
-                        "summary": f"Added column {c.get('column_name')} ({c.get('data_type')})",
-                        "from_run_id": older.get("id"),
-                        "to_run_id": newer.get("id"),
-                    }
-                )
-            else:
-                old_t = str(old_map[key].get("data_type") or "")
-                new_t = str(c.get("data_type") or "")
-                if old_t and new_t and old_t.lower() != new_t.lower():
-                    events.append(
-                        {
-                            "time": json_val(newer.get("ts")),
-                            "age": age_label(newer.get("ts"), now),
-                            "pipeline_id": pid,
-                            "pipeline_name": newer.get("pipeline_name"),
-                            "object_name": c.get("object_name"),
-                            "dataset": f"{c.get('database_name')}.{c.get('schema_name')}.{c.get('object_name')}",
-                            "change_type": "modify_column",
-                            "impact": "breaking",
-                            "summary": f"Modified {c.get('column_name')}: {old_t} → {new_t}",
-                            "from_run_id": older.get("id"),
-                            "to_run_id": newer.get("id"),
-                        }
-                    )
-
-        for key, c in old_map.items():
-            if key not in new_map:
-                events.append(
-                    {
-                        "time": json_val(newer.get("ts")),
-                        "age": age_label(newer.get("ts"), now),
-                        "pipeline_id": pid,
-                        "pipeline_name": newer.get("pipeline_name"),
-                        "object_name": c.get("object_name"),
-                        "dataset": f"{c.get('database_name')}.{c.get('schema_name')}.{c.get('object_name')}",
-                        "change_type": "drop_column",
-                        "impact": "breaking",
-                        "summary": f"Dropped column {c.get('column_name')} ({c.get('data_type')})",
-                        "from_run_id": older.get("id"),
-                        "to_run_id": newer.get("id"),
-                    }
-                )
+        old_cols = _columns_for_run(conn, older["id"])
+        for diff in compute_schema_diffs(new_cols, old_cols):
+            events.append(_diff_to_event(diff, newer=newer, older=older, pid=pid, now=now))
 
     events.sort(key=lambda e: e.get("time") or "", reverse=True)
     return events
@@ -243,8 +215,8 @@ def build_schema_page(
         summary={"changes": total, "breaking": breaking, "compatibility_pct": compatibility},
         meta={
             "formula": (
-                "Compare TARGET columns between latest two successful runs per pipeline. "
-                "Add=non_breaking; drop/type-change=breaking."
+                "Compare TARGET columns between latest two successful runs per pipeline "
+                "(shared compute_schema_diffs with RCA). Add=non_breaking; drop/type-change=breaking."
             ),
             "available": True,
         },

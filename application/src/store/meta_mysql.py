@@ -2912,6 +2912,13 @@ def create_pipeline_from_tools(
                     (binding_id, pid, "TARGET", iid, json.dumps(selector, default=str), ordinal),
                 )
                 ordinal += 1
+        from application.src.services.observability.lifecycle import (
+            ensure_default_dq_rules,
+            ensure_default_monitors,
+        )
+
+        ensure_default_monitors(conn)
+        ensure_default_dq_rules(conn, pipeline_id=pid)
         bump_usage(conn, runs_ingested=0, poll_ticks=0)
         conn.commit()
         return {

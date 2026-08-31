@@ -25,6 +25,20 @@ from application.src.services.observability.filters import (
 )
 
 
+def _target_assets_subquery() -> str:
+    """Per-run TARGET aggregates; NULL row_count excluded from SUM (unknown, not zero)."""
+    return """
+          SELECT
+            a.run_id,
+            SUM(a.row_count) AS target_rows,
+            SUM(COALESCE(a.size_bytes, 0)) AS target_bytes,
+            SUM(CASE WHEN a.row_count IS NOT NULL THEN 1 ELSE 0 END) AS rows_known
+          FROM obs_run_assets a
+          WHERE UPPER(COALESCE(a.asset_role, '')) = 'TARGET'
+          GROUP BY a.run_id
+    """
+
+
 def _run_volume_totals(conn, from_str: str, to_str: str, *, pipeline_name=None, pipeline_id=None, tool=None) -> dict:
     where, params = build_run_where(
         alias="r",
@@ -43,17 +57,38 @@ def _run_volume_totals(conn, from_str: str, to_str: str, *, pipeline_name=None, 
           COUNT(DISTINCT r.id) AS run_count
         FROM obs_pipeline_runs r
         LEFT JOIN (
-          SELECT
-            a.run_id,
-            SUM(COALESCE(a.row_count, 0)) AS target_rows,
-            SUM(COALESCE(a.size_bytes, 0)) AS target_bytes
-          FROM obs_run_assets a
-          WHERE UPPER(COALESCE(a.asset_role, '')) = 'TARGET'
-          GROUP BY a.run_id
+          {_target_assets_subquery()}
         ) t ON t.run_id = CAST(r.id AS CHAR)
         {where}
     """
     return fetchone(conn, sql, params)
+
+
+def _latest_target_counts_available(conn, *, pipeline_name=None, pipeline_id=None, tool=None) -> bool:
+    """True when the latest run in scope has at least one TARGET asset with row_count."""
+    where, params = build_run_where(
+        alias="r",
+        pipeline_name=pipeline_name,
+        pipeline_id=pipeline_id,
+        tool=tool,
+    )
+    row = fetchone(
+        conn,
+        f"""
+        SELECT COALESCE(SUM(CASE WHEN a.row_count IS NOT NULL THEN 1 ELSE 0 END), 0) AS known
+        FROM obs_run_assets a
+        INNER JOIN (
+          SELECT r.id AS run_id
+          FROM obs_pipeline_runs r
+          {where}
+          ORDER BY COALESCE(r.end_time, r.start_time, r.created_at) DESC
+          LIMIT 1
+        ) latest ON latest.run_id = CAST(a.run_id AS CHAR)
+        WHERE UPPER(COALESCE(a.asset_role, '')) = 'TARGET'
+        """,
+        params,
+    )
+    return int(num((row or {}).get("known"))) > 0
 
 
 def _per_pipeline_volume(
@@ -77,13 +112,7 @@ def _per_pipeline_volume(
           COUNT(DISTINCT r.id) AS runs
         FROM obs_pipeline_runs r
         LEFT JOIN (
-          SELECT
-            a.run_id,
-            SUM(COALESCE(a.row_count, 0)) AS target_rows,
-            SUM(COALESCE(a.size_bytes, 0)) AS target_bytes
-          FROM obs_run_assets a
-          WHERE UPPER(COALESCE(a.asset_role, '')) = 'TARGET'
-          GROUP BY a.run_id
+          {_target_assets_subquery()}
         ) t ON t.run_id = CAST(r.id AS CHAR)
         {where}
         GROUP BY r.pipeline_id, r.pipeline_name
@@ -111,12 +140,7 @@ def _series_volume(
           COALESCE(SUM(t.target_bytes), 0) AS bytes
         FROM obs_pipeline_runs r
         LEFT JOIN (
-          SELECT a.run_id,
-                 SUM(COALESCE(a.row_count, 0)) AS target_rows,
-                 SUM(COALESCE(a.size_bytes, 0)) AS target_bytes
-          FROM obs_run_assets a
-          WHERE UPPER(COALESCE(a.asset_role, '')) = 'TARGET'
-          GROUP BY a.run_id
+          {_target_assets_subquery()}
         ) t ON t.run_id = CAST(r.id AS CHAR)
         {where}
         GROUP BY bucket
@@ -325,8 +349,14 @@ def build_volume_page(
             "prev_bytes": prev_bytes,
         },
         meta={
-            "formula": "SUM(TARGET row_count/size_bytes) per run in range; % change vs previous equal-length window.",
+            "formula": "SUM(TARGET row_count/size_bytes) per run in range; NULL row_count treated as unknown.",
             "byte_note": "1 TB = 1024 GB",
+            "records_available": _latest_target_counts_available(
+                conn,
+                pipeline_name=pipeline_name,
+                pipeline_id=pipeline_id,
+                tool=tool,
+            ),
         },
     )
 

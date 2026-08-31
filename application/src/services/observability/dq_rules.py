@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import json
-import uuid
 from typing import Any
 
 from application.src.services.observability.filters import utc_now
-from application.src.services.observability.lifecycle import _target_db_connector
+from application.src.services.observability.lifecycle import _write_check_result, _target_db_connector
 from application.src.services.observability.quality import infer_dimension, normalize_dataset_id
 from application.src.store.meta_mysql import _RULE_TYPE_TO_CHECK_KIND, list_dq_rules
 
@@ -138,23 +137,15 @@ def evaluate_dq_rules(conn, *, pipeline_id: str | None = None) -> dict[str, Any]
             rid = str(rule.get("rule_id") or "")
             pid = str(rule.get("pipeline_id") or "")
             status, severity, message, observed = _evaluate_one_rule(conn, rule)
-            cid = str(uuid.uuid4())
-            cur.execute(
-                """
-                INSERT INTO obs_check_results (
-                  check_id, monitor_id, pipeline_id, status, severity, message, observed_json, checked_at
-                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
-                """,
-                (
-                    cid,
-                    f"rule:{rid}"[:64],
-                    pid,
-                    status,
-                    severity,
-                    message,
-                    json.dumps(observed, default=str),
-                    now,
-                ),
+            _write_check_result(
+                cur,
+                monitor_id=f"rule:{rid}"[:64],
+                pipeline_id=pid,
+                status=status,
+                severity=severity,
+                message=message,
+                observed=observed,
+                now=now,
             )
             checks += 1
             if status == "fail":

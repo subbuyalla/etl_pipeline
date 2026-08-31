@@ -19,6 +19,7 @@ from dotenv import load_dotenv
 load_dotenv(ROOT / ".env")
 
 from application.src.connectors.dbt import DbtConnector  # noqa: E402
+from application.src.connectors.snowflake import SnowflakeConnector  # noqa: E402
 from application.src.connectors.openlineage import parse_openlineage_event  # noqa: E402
 from application.src.connectors.validation import parse_dataset_fqn, quote_ident_pg  # noqa: E402
 from application.src.connectors.errors import (  # noqa: E402
@@ -100,6 +101,41 @@ class TestOfflineHelpers(unittest.TestCase):
         self.assertEqual(diffs[0]["change_type"], "column_added")
         self.assertEqual(diffs[0]["column_name"], "STATUS")
 
+    def test_snowflake_view_row_count_fallback(self):
+        class FakeCursor:
+            def __init__(self):
+                self.last_sql = ""
+
+            def execute(self, sql, params=None):
+                self.last_sql = sql
+
+            def fetchone(self):
+                return (208,)
+
+        conn = SnowflakeConnector.__new__(SnowflakeConnector)
+        conn.database_id = "INVENTORY_DB"
+        conn.cursor = FakeCursor()
+        rows = [
+            {
+                "database": "INVENTORY_DB",
+                "schema": "MART",
+                "table": "DIM_INVENTORY",
+                "table_type": "VIEW",
+                "row_count": None,
+            },
+            {
+                "database": "INVENTORY_DB",
+                "schema": "MART",
+                "table": "RAW_TABLE",
+                "table_type": "BASE TABLE",
+                "row_count": 100,
+            },
+        ]
+        conn._fill_view_row_counts(rows)
+        self.assertEqual(rows[0]["row_count"], 208)
+        self.assertEqual(rows[1]["row_count"], 100)
+        self.assertIn("COUNT(*)", conn.cursor.last_sql)
+
     def test_manifest_to_edges(self):
         manifest = {
             "nodes": {
@@ -156,7 +192,7 @@ class TestSeededMetadata(unittest.TestCase):
         conn = get_connection()
         try:
             ensure_tables(conn)
-            summary = quality_summary(conn, pipeline_id="demo-pipeline-001")
+            summary = quality_summary(conn, pipeline_id="demo-pipeline-001", source="dbt")
             self.assertTrue(summary.get("available"))
             self.assertEqual(summary.get("checks_run"), 4)
             self.assertEqual(summary.get("failed"), 1)

@@ -110,7 +110,18 @@ PUBLIC_BASE_URL=http://<ec2-public-ip>:8002
 # Poller
 SYNC_INTERVAL_SECONDS=300
 RAW_RETENTION_DAYS=30
+DB_NAME=metadata1
 ```
+
+**The database in `DATABASE_URL` must exist on RDS before you start the API.**
+
+If you use `metadata1`, create it first (RDS Query Editor or mysql client):
+
+```sql
+CREATE DATABASE metadata1;
+```
+
+Or point `DATABASE_URL` at an existing database (e.g. `/metadata` if that is what you already created).
 
 Generate Fernet key on EC2:
 
@@ -124,16 +135,33 @@ Paste the output into `SECRETS_MASTER_KEY`.
 
 ## 5. Start the stack
 
-Use the **production compose file** (no local MySQL container):
+Use the **production compose file** (no local MySQL container).
+
+**Docker Compose v2** (plugin installed):
 
 ```bash
 docker compose -f docker-compose.prod.yml up -d --build
+```
+
+**Amazon Linux / older Docker** (use hyphenated command):
+
+```bash
+docker-compose -f docker-compose.prod.yml up -d --build
+```
+
+If `docker-compose` is missing:
+
+```bash
+sudo yum install -y docker-compose-plugin
+# or: sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+# sudo chmod +x /usr/local/bin/docker-compose
 ```
 
 Check status:
 
 ```bash
 docker compose -f docker-compose.prod.yml ps
+# or: docker-compose -f docker-compose.prod.yml ps
 docker compose -f docker-compose.prod.yml logs -f api
 ```
 
@@ -212,6 +240,36 @@ For production, put **nginx + HTTPS** in front and use `https://your-domain/webh
 
 ## 9. Operations
 
+### Post-deploy checklist
+
+After first deploy (or code update affecting sync/observability):
+
+1. Set **`PUBLIC_BASE_URL`** in `.env` to your live API base (required for webhooks and `/health` links):
+
+   ```env
+   PUBLIC_BASE_URL=http://<ec2-public-ip>:8002
+   ```
+
+   Example: `PUBLIC_BASE_URL=http://16.112.179.140:8002`
+
+2. Restart containers after `.env` changes (see below).
+
+3. Trigger a metadata sync so VIEW row counts and TARGET assets refresh:
+
+   ```bash
+   curl -X POST "http://<ec2-public-ip>:8002/v1/sync"
+   ```
+
+4. Verify observability APIs return data:
+
+   ```bash
+   curl "http://<ec2-public-ip>:8002/api/v1/observability/volume"
+   curl "http://<ec2-public-ip>:8002/api/v1/observability/quality"
+   curl "http://<ec2-public-ip>:8002/api/v1/overview/health"
+   ```
+
+   Expect **Records Received > 0** on volume once TARGET views have row counts; quality timeliness noise should drop after monitor dedupe.
+
 ### View logs
 
 ```bash
@@ -254,6 +312,8 @@ docker compose -f docker-compose.prod.yml exec api python scripts/seed_demo_meta
 
 | Problem | Fix |
 |---------|-----|
+| `Unknown database 'metadata1'` | Create DB on RDS: `CREATE DATABASE metadata1;` or change `DATABASE_URL` to existing DB name (e.g. `metadata`) |
+| `unknown shorthand flag: 'f'` | Use `docker-compose` (hyphen) instead of `docker compose`, or install compose plugin |
 | API can't reach RDS | Check RDS SG allows EC2 on 3306; verify `DATABASE_URL` |
 | `Access denied` MySQL | Wrong user/password in `DATABASE_URL` |
 | Poller not syncing | `docker compose logs poller`; check dbt/Snowflake tool secrets |

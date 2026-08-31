@@ -272,6 +272,32 @@ def _dedupe_last_run(rows: list[dict], *, source: str = "all") -> list[dict]:
     return out
 
 
+def _dedupe_time_window(rows: list[dict], *, source: str = "all") -> list[dict]:
+    """In a time window, keep all dbt checks but only the latest result per monitor/rule."""
+    if not rows:
+        return []
+
+    src = (source or "all").lower()
+    dbt_rows = [r for r in rows if is_dbt_check(r.get("monitor_id"))]
+    mon_rows = [r for r in rows if not is_dbt_check(r.get("monitor_id"))]
+    out: list[dict] = []
+
+    if src in {"all", "dbt"}:
+        out.extend(dbt_rows)
+
+    if src in {"all", "monitor"} and mon_rows:
+        latest_by_mon: dict[str, tuple[dict, Any]] = {}
+        for r in mon_rows:
+            mid = str(r.get("monitor_id") or "")
+            checked = r.get("checked_at")
+            prev = latest_by_mon.get(mid)
+            if prev is None or (checked and checked > prev[1]):
+                latest_by_mon[mid] = (r, checked)
+        out.extend(v[0] for v in latest_by_mon.values())
+
+    return out
+
+
 def _summarize_rows(rows: list[dict]) -> dict[str, Any]:
     if not rows:
         return {
@@ -352,6 +378,8 @@ def quality_summary(
     )
     if score_mode == "last_run":
         rows = _dedupe_last_run(rows, source=source)
+    else:
+        rows = _dedupe_time_window(rows, source=source)
     summary = _summarize_rows(rows)
     summary["score_mode"] = score_mode
     summary["source"] = source
@@ -498,6 +526,8 @@ def dimension_pillar_summary(
     )
     if score_mode == "last_run":
         rows = _dedupe_last_run(rows, source=source)
+    else:
+        rows = _dedupe_time_window(rows, source=source)
     filtered = [r for r in rows if (_row_dimension(r) or "").lower() in dims]
     summary = _summarize_rows(filtered)
     summary["dimensions"] = sorted(dims)
@@ -685,6 +715,8 @@ def build_quality_page(
     )
     if score_mode == "last_run":
         rows = _dedupe_last_run(rows, source=source)
+    else:
+        rows = _dedupe_time_window(rows, source=source)
 
     items: list[dict] = []
     for r in rows:
