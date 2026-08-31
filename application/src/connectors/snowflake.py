@@ -107,7 +107,7 @@ class SnowflakeConnector:
             sql = """
                 SELECT TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ROW_COUNT, BYTES, LAST_ALTERED
                 FROM INFORMATION_SCHEMA.TABLES
-                WHERE TABLE_TYPE = 'BASE TABLE'
+                WHERE TABLE_TYPE IN ('BASE TABLE', 'VIEW', 'MATERIALIZED VIEW')
             """
             params: list = []
             if self.schema:
