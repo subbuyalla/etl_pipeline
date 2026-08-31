@@ -7,7 +7,9 @@ from typing import Any, Optional
 from application.src.api.schemas import make_kpi
 from application.src.services.observability.filters import (
     age_label,
+    apply_delta,
     build_run_where,
+    chart_bucket_grain,
     delta_pct,
     envelope,
     fetchall,
@@ -15,9 +17,12 @@ from application.src.services.observability.filters import (
     format_duration,
     is_pipeline_operational,
     json_val,
+    load_pipeline_activity,
     num,
     parse_range,
     pct,
+    sql_time_bucket_expr,
+    zero_fill_series,
 )
 from application.src.services.observability.freshness import (
     freshness_summary,
@@ -27,6 +32,7 @@ from application.src.services.observability.incidents import (
     incident_series,
     list_derived_incidents,
 )
+from application.src.services.observability.quality import dimension_pillar_summary, quality_summary
 from application.src.services.observability.schema_diff import schema_health_score
 from application.src.services.observability.volume import volume_health_score
 
@@ -49,6 +55,11 @@ def _run_aggregates(conn, from_str: str, to_str: str, **filters) -> dict:
           SUM(CASE WHEN LOWER(COALESCE(status,'')) IN ('success','succeeded') THEN 1 ELSE 0 END) AS success_runs,
           SUM(CASE WHEN LOWER(COALESCE(status,'')) IN ('failed','error') THEN 1 ELSE 0 END) AS failed_runs,
           SUM(CASE WHEN LOWER(COALESCE(status,'')) = 'running' THEN 1 ELSE 0 END) AS running_runs,
+          SUM(CASE WHEN LOWER(COALESCE(status,'')) = 'cancelled' THEN 1 ELSE 0 END) AS cancelled_runs,
+          SUM(
+            CASE WHEN LOWER(COALESCE(status,'')) IN
+              ('success','succeeded','failed','error','cancelled') THEN 1 ELSE 0 END
+          ) AS terminal_runs,
           AVG(duration) AS avg_duration
         FROM obs_pipeline_runs r
         {where}
@@ -57,7 +68,42 @@ def _run_aggregates(conn, from_str: str, to_str: str, **filters) -> dict:
     )
 
 
+def _count_pipelines(conn, **filters) -> int:
+    """Count registered pipelines, optionally filtered by id/name/tool."""
+    clauses: list[str] = []
+    params: list = []
+    if filters.get("pipeline_name"):
+        names = [n.strip() for n in str(filters["pipeline_name"]).split(",") if n.strip()]
+        if names:
+            ph = ",".join(["%s"] * len(names))
+            clauses.append(f"pipeline_name IN ({ph})")
+            params.extend(names)
+    if filters.get("pipeline_id"):
+        ids = [i.strip() for i in str(filters["pipeline_id"]).split(",") if i.strip()]
+        if ids:
+            ph = ",".join(["%s"] * len(ids))
+            clauses.append(f"pipeline_id IN ({ph})")
+            params.extend(ids)
+    if filters.get("tool"):
+        tools = [t.strip().lower() for t in str(filters["tool"]).split(",") if t.strip()]
+        if tools:
+            ph = ",".join(["%s"] * len(tools))
+            clauses.append(
+                f"(LOWER(COALESCE(etl_tool,'')) IN ({ph})"
+                f" OR LOWER(COALESCE(source_tool,'')) IN ({ph})"
+                f" OR LOWER(COALESCE(target_tool,'')) IN ({ph}))"
+            )
+            params.extend(tools)
+            params.extend(tools)
+            params.extend(tools)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    row = fetchone(conn, f"SELECT COUNT(*) AS n FROM obs_pipelines {where}", params)
+    return int(num(row.get("n")))
+
+
 def build_overview_charts(conn, rng: dict, **filters) -> dict:
+    grain = chart_bucket_grain(rng)
+    bucket_expr = sql_time_bucket_expr("r", grain)
     where, params = build_run_where(
         alias="r",
         from_str=rng["from_str"],
@@ -71,65 +117,113 @@ def build_overview_charts(conn, rng: dict, **filters) -> dict:
         conn,
         f"""
         SELECT
-          DATE(COALESCE(r.end_time, r.start_time, r.created_at)) AS day,
+          {bucket_expr} AS bucket,
           SUM(CASE WHEN LOWER(COALESCE(status,'')) IN ('success','succeeded') THEN 1 ELSE 0 END) AS success_cnt,
           SUM(CASE WHEN LOWER(COALESCE(status,'')) IN ('failed','error') THEN 1 ELSE 0 END) AS failed_cnt,
           SUM(CASE WHEN LOWER(COALESCE(status,'')) = 'running' THEN 1 ELSE 0 END) AS running_cnt,
+          SUM(CASE WHEN LOWER(COALESCE(status,'')) = 'cancelled' THEN 1 ELSE 0 END) AS cancelled_cnt,
+          SUM(
+            CASE WHEN LOWER(COALESCE(status,'')) IN
+              ('success','succeeded','failed','error','cancelled') THEN 1 ELSE 0 END
+          ) AS terminal_cnt,
           COUNT(*) AS total_cnt
         FROM obs_pipeline_runs r
         {where}
-        GROUP BY day
-        ORDER BY day ASC
+        GROUP BY bucket
+        ORDER BY bucket ASC
         """,
         params,
     )
-    labels = [json_val(r.get("day")) for r in rows]
+    raw_labels = [json_val(r.get("bucket")) for r in rows]
     success = [int(num(r.get("success_cnt"))) for r in rows]
     failed = [int(num(r.get("failed_cnt"))) for r in rows]
     running = [int(num(r.get("running_cnt"))) for r in rows]
-    cancelled = [
-        max(0, int(num(r.get("total_cnt"))) - s - f - run)
-        for r, s, f, run in zip(rows, success, failed, running)
-    ]
+    cancelled = [int(num(r.get("cancelled_cnt"))) for r in rows]
     rates = [
         round(100.0 * s / t, 1) if t else 0.0
-        for s, t in zip(success, [int(num(r.get("total_cnt"))) for r in rows])
+        for s, t in zip(success, [int(num(r.get("terminal_cnt"))) for r in rows])
     ]
+    labels, filled = zero_fill_series(
+        raw_labels,
+        {
+            "success": success,
+            "failed": failed,
+            "running": running,
+            "cancelled": cancelled,
+            "rates": rates,
+        },
+        rng,
+        grain=grain,
+    )
     inc = incident_series(
         conn,
         rng["from_str"],
         rng["to_str"],
         pipeline_name=filters.get("pipeline_name"),
         pipeline_id=filters.get("pipeline_id"),
+        grain=grain,
+        rng=rng,
     )
     return {
         "labels": labels,
+        "bucket_grain": grain,
         "runs_over_time": {
-            "success": success,
-            "failed": failed,
-            "running": running,
-            "cancelled": cancelled,
+            "success": filled["success"],
+            "failed": filled["failed"],
+            "running": filled["running"],
+            "cancelled": filled["cancelled"],
         },
-        "success_rate_over_time": rates,
+        "success_rate_over_time": filled["rates"],
         "incidents_over_time": {
             "labels": inc["labels"],
-            "high": inc["critical"],
-            "medium": inc["high"],
-            "low": inc["medium"],
-            "open": inc["open"],
-            "resolved": inc["resolved"],
+            "critical": inc["critical"],
+            "high": inc["high"],
+            "medium": inc["medium"],
+            # Honest labels: failed/success run counts (not true open/resolved incidents)
+            "failed_runs": inc["failed_runs"],
+            "success_runs": inc["success_runs"],
+            # Back-compat aliases (same series as failed_runs / success_runs)
+            "open": inc["failed_runs"],
+            "resolved": inc["success_runs"],
+        },
+        "meta": {
+            "incidents_series_note": (
+                "critical/high/medium = failed runs by severity; "
+                "failed_runs/success_runs = run status counts (not deduped incidents)."
+            ),
         },
     }
 
 
 def build_overview_health(conn, rng: dict) -> dict[str, Any]:
-    fresh_rows = load_pipeline_freshness(conn)
+    # Freshness as-of range end when a bounded range is provided
+    as_of = rng.get("to") if str(rng.get("preset") or "").lower() != "all" else None
+    fresh_rows = load_pipeline_freshness(conn, as_of=as_of)
     fresh_sum = freshness_summary(fresh_rows)
     vol = volume_health_score(
         conn, rng["from_str"], rng["to_str"], rng["prev_from_str"], rng["prev_to_str"]
     )
     sch = schema_health_score(conn)
+    dq = quality_summary(conn, from_str=rng["from_str"], to_str=rng["to_str"])
+    dq_score = dq.get("quality_score")
+    consistency = dimension_pillar_summary(
+        conn,
+        from_str=rng["from_str"],
+        to_str=rng["to_str"],
+        dimensions=["accuracy"],
+        score_mode="last_run",
+    )
+    consistency_score = consistency.get("quality_score")
+    uniqueness = dimension_pillar_summary(
+        conn,
+        from_str=rng["from_str"],
+        to_str=rng["to_str"],
+        dimensions=["uniqueness"],
+        score_mode="last_run",
+    )
+    uniqueness_score = uniqueness.get("quality_score")
 
+    # Stable pillar keys (not UUIDs) — FE contracts depend on these ids
     pillars = [
         {
             "id": "freshness",
@@ -147,7 +241,7 @@ def build_overview_health(conn, rng: dict) -> dict[str, Any]:
             ),
             "available": fresh_sum.get("fresh_pct") is not None,
             "change": None,
-            "details": fresh_sum,
+            "details": {**fresh_sum, "as_of": json_val(as_of) if as_of else "now"},
         },
         {
             "id": "volume",
@@ -170,12 +264,20 @@ def build_overview_health(conn, rng: dict) -> dict[str, Any]:
         {
             "id": "data_quality",
             "name": "Data Quality",
-            "score": None,
-            "display": "N/A",
-            "status": "N/A",
-            "available": False,
+            "score": dq_score,
+            "display": f"{dq_score}%" if dq_score is not None else "N/A",
+            "status": (
+                "Good"
+                if (dq_score or 0) >= 90
+                else "Warning"
+                if (dq_score or 0) >= 75
+                else "Critical"
+                if dq.get("available")
+                else "N/A"
+            ),
+            "available": bool(dq.get("available")),
             "change": None,
-            "details": {"reason": "No check_results stored in obs_* yet"},
+            "details": dq,
         },
         {
             "id": "schema",
@@ -198,22 +300,38 @@ def build_overview_health(conn, rng: dict) -> dict[str, Any]:
         {
             "id": "consistency",
             "name": "Consistency",
-            "score": None,
-            "display": "N/A",
-            "status": "N/A",
-            "available": False,
+            "score": consistency_score,
+            "display": f"{consistency_score}%" if consistency_score is not None else "N/A",
+            "status": (
+                "Good"
+                if (consistency_score or 0) >= 90
+                else "Warning"
+                if (consistency_score or 0) >= 75
+                else "Critical"
+                if consistency.get("available")
+                else "N/A"
+            ),
+            "available": bool(consistency.get("available")),
             "change": None,
-            "details": {"reason": "No consistency monitors yet"},
+            "details": consistency,
         },
         {
             "id": "uniqueness",
             "name": "Uniqueness",
-            "score": None,
-            "display": "N/A",
-            "status": "N/A",
-            "available": False,
+            "score": uniqueness_score,
+            "display": f"{uniqueness_score}%" if uniqueness_score is not None else "N/A",
+            "status": (
+                "Good"
+                if (uniqueness_score or 0) >= 90
+                else "Warning"
+                if (uniqueness_score or 0) >= 75
+                else "Critical"
+                if uniqueness.get("available")
+                else "N/A"
+            ),
+            "available": bool(uniqueness.get("available")),
             "change": None,
-            "details": {"reason": "No uniqueness monitors yet"},
+            "details": uniqueness,
         },
     ]
     return {"pillars": pillars}
@@ -238,6 +356,10 @@ def build_pipeline_monitoring(conn, rng: dict, **filters) -> list[dict]:
           COUNT(*) AS total_runs,
           SUM(CASE WHEN LOWER(COALESCE(status,'')) IN ('success','succeeded') THEN 1 ELSE 0 END) AS success_runs,
           SUM(CASE WHEN LOWER(COALESCE(status,'')) IN ('failed','error') THEN 1 ELSE 0 END) AS failed_runs,
+          SUM(
+            CASE WHEN LOWER(COALESCE(status,'')) IN
+              ('success','succeeded','failed','error','cancelled') THEN 1 ELSE 0 END
+          ) AS terminal_runs,
           AVG(duration) AS avg_duration,
           MAX(COALESCE(end_time, start_time, created_at)) AS last_run_at,
           SUBSTRING_INDEX(
@@ -262,6 +384,18 @@ def build_pipeline_monitoring(conn, rng: dict, **filters) -> list[dict]:
             ph = ",".join(["%s"] * len(ids))
             pipe_where.append(f"p.pipeline_id IN ({ph})")
             pipe_params.extend(ids)
+    if filters.get("tool"):
+        tools = [t.strip().lower() for t in str(filters["tool"]).split(",") if t.strip()]
+        if tools:
+            ph = ",".join(["%s"] * len(tools))
+            pipe_where.append(
+                f"(LOWER(COALESCE(p.etl_tool,'')) IN ({ph})"
+                f" OR LOWER(COALESCE(p.source_tool,'')) IN ({ph})"
+                f" OR LOWER(COALESCE(p.target_tool,'')) IN ({ph}))"
+            )
+            pipe_params.extend(tools)
+            pipe_params.extend(tools)
+            pipe_params.extend(tools)
     pw = ("WHERE " + " AND ".join(pipe_where)) if pipe_where else ""
 
     rows = fetchall(
@@ -278,6 +412,7 @@ def build_pipeline_monitoring(conn, rng: dict, **filters) -> list[dict]:
           COALESCE(a.total_runs, 0) AS total_runs,
           COALESCE(a.success_runs, 0) AS success_runs,
           COALESCE(a.failed_runs, 0) AS failed_runs,
+          COALESCE(a.terminal_runs, 0) AS terminal_runs,
           a.avg_duration,
           a.last_run_at,
           a.latest_status
@@ -288,6 +423,10 @@ def build_pipeline_monitoring(conn, rng: dict, **filters) -> list[dict]:
         """,
         list(params) + pipe_params,
     )
+    # Global last activity (not range-scoped) drives is_active / activity
+    activity_map = {
+        a["pipeline_id"]: a for a in load_pipeline_activity(conn, persist=False)
+    }
     open_inc = {
         i["pipeline_id"]
         for i in list_derived_incidents(conn, include_resolved=False)
@@ -298,10 +437,18 @@ def build_pipeline_monitoring(conn, rng: dict, **filters) -> list[dict]:
         pid = r.get("pipeline_id")
         total = num(r.get("total_runs"))
         succ = num(r.get("success_runs"))
-        sr = pct(succ, total) if total else None
+        terminal = num(r.get("terminal_runs")) or total
+        sr = pct(succ, terminal) if terminal else None
         st = str(r.get("latest_status") or ("N/A" if total == 0 else "unknown")).capitalize()
         if st == "N/a":
             st = "N/A"
+        global_act = activity_map.get(pid) or {}
+        global_last = global_act.get("last_run_at")
+        operational = (
+            bool(global_act.get("is_active"))
+            if global_act
+            else is_pipeline_operational(r.get("last_run_at"), r.get("latest_status"))
+        )
         out.append(
             {
                 "pipeline_id": pid,
@@ -321,12 +468,9 @@ def build_pipeline_monitoring(conn, rng: dict, **filters) -> list[dict]:
                 "avg_duration_seconds": num(r.get("avg_duration")) if r.get("avg_duration") is not None else None,
                 "last_run": json_val(r.get("last_run_at")),
                 "last_run_age": age_label(r.get("last_run_at")),
-                "is_active": is_pipeline_operational(r.get("last_run_at"), r.get("latest_status")),
-                "activity": (
-                    "Active"
-                    if is_pipeline_operational(r.get("last_run_at"), r.get("latest_status"))
-                    else "Inactive"
-                ),
+                "global_last_run": global_last,
+                "is_active": operational,
+                "activity": "Active" if operational else "Inactive",
                 "is_sync_default": bool(r.get("is_active")),
             }
         )
@@ -336,32 +480,63 @@ def build_pipeline_monitoring(conn, rng: dict, **filters) -> list[dict]:
 def build_overview_kpis(conn, rng: dict, **filters) -> list[dict]:
     cur = _run_aggregates(conn, rng["from_str"], rng["to_str"], **filters)
     prev = _run_aggregates(conn, rng["prev_from_str"], rng["prev_to_str"], **filters)
-    pipe_n = int(num(fetchone(conn, "SELECT COUNT(*) AS n FROM obs_pipelines").get("n")))
+    pipe_n = _count_pipelines(conn, **filters)
     total = num(cur.get("total_runs"))
     success = num(cur.get("success_runs"))
     failed = num(cur.get("failed_runs"))
-    rate = pct(success, total)
+    terminal = num(cur.get("terminal_runs"))
+    rate = pct(success, terminal)  # exclude running from denominator
     avg_dur = num(cur.get("avg_duration")) if cur.get("avg_duration") is not None else None
 
     prev_total = num(prev.get("total_runs"))
     prev_success = num(prev.get("success_runs"))
     prev_failed = num(prev.get("failed_runs"))
-    prev_rate = pct(prev_success, prev_total)
+    prev_terminal = num(prev.get("terminal_runs"))
+    prev_rate = pct(prev_success, prev_terminal)
     prev_avg = num(prev.get("avg_duration")) if prev.get("avg_duration") is not None else None
 
-    open_inc = [
-        i for i in list_derived_incidents(conn, include_resolved=False) if i.get("status") == "open"
-    ]
-    prev_open = list_derived_incidents(
-        conn,
-        from_str=rng["prev_from_str"],
-        to_str=rng["prev_to_str"],
-        include_resolved=False,
-    )
-    prev_open_n = sum(1 for i in prev_open if i.get("status") == "open")
+    # Active incidents: same scope for value and delta — open incidents whose
+    # opened_at falls in the window (global "currently open" filtered by opened_at).
+    def _open_in_window(from_str: str, to_str: str) -> int:
+        items = list_derived_incidents(
+            conn,
+            pipeline_name=filters.get("pipeline_name"),
+            pipeline_id=filters.get("pipeline_id"),
+            include_resolved=False,
+        )
+        n = 0
+        for i in items:
+            if i.get("status") != "open":
+                continue
+            opened = i.get("opened_at")
+            if not opened:
+                n += 1
+                continue
+            # Compare as strings YYYY-MM-DD HH:MM:SS
+            opened_s = str(opened).replace("T", " ")[:19]
+            if from_str <= opened_s <= to_str:
+                n += 1
+        return n
 
-    # Failed pipelines = distinct pipelines with latest failed (open incidents)
-    failed_pipelines = len(open_inc)
+    # For "currently open" KPI: count all open now (with pipeline filters).
+    # Delta compares open-with-opened_at-in-range vs previous equal window.
+    open_now = [
+        i
+        for i in list_derived_incidents(
+            conn,
+            pipeline_name=filters.get("pipeline_name"),
+            pipeline_id=filters.get("pipeline_id"),
+            include_resolved=False,
+        )
+        if i.get("status") == "open"
+    ]
+    # Prefer range-scoped counts so value/delta share the same definition
+    cur_open_n = _open_in_window(rng["from_str"], rng["to_str"])
+    prev_open_n = _open_in_window(rng["prev_from_str"], rng["prev_to_str"])
+    # When range is "all", opened_at filter is vacuous — use live open count
+    if str(rng.get("preset") or "").lower() == "all":
+        cur_open_n = len(open_now)
+        prev_open_n = cur_open_n
 
     return [
         make_kpi(
@@ -375,10 +550,9 @@ def build_overview_kpis(conn, rng: dict, **filters) -> list[dict]:
             title="Successful Runs",
             value=rate,
             display=f"{rate}%" if rate is not None else "N/A",
-            delta=(
-                round(rate - prev_rate, 1)
-                if rate is not None and prev_rate is not None
-                else None
+            delta=apply_delta(
+                round(rate - prev_rate, 1) if rate is not None and prev_rate is not None else None,
+                rng,
             ),
             delta_label="vs previous period",
             available=rate is not None,
@@ -389,7 +563,7 @@ def build_overview_kpis(conn, rng: dict, **filters) -> list[dict]:
             title="Failed Runs",
             value=int(failed),
             display=str(int(failed)),
-            delta=delta_pct(failed, prev_failed),
+            delta=apply_delta(delta_pct(failed, prev_failed), rng),
             delta_label="vs previous period",
             tone="bad" if failed else "ok",
         ),
@@ -398,25 +572,28 @@ def build_overview_kpis(conn, rng: dict, **filters) -> list[dict]:
             title="Avg Pipeline Duration",
             value=avg_dur,
             display=format_duration(avg_dur) or "N/A",
-            delta=delta_pct(avg_dur, prev_avg) if avg_dur is not None else None,
+            delta=apply_delta(
+                delta_pct(avg_dur, prev_avg) if avg_dur is not None else None,
+                rng,
+            ),
             delta_label="vs previous period",
             available=avg_dur is not None,
         ),
         make_kpi(
             id="active_incidents",
             title="Active Incidents",
-            value=failed_pipelines,
-            display=str(failed_pipelines),
-            delta=delta_pct(float(failed_pipelines), float(prev_open_n)),
+            value=cur_open_n,
+            display=str(cur_open_n),
+            delta=apply_delta(delta_pct(float(cur_open_n), float(prev_open_n)), rng),
             delta_label="vs previous period",
-            tone="bad" if failed_pipelines else "ok",
+            tone="bad" if cur_open_n else "ok",
         ),
         make_kpi(
             id="total_runs",
             title="Runs",
             value=int(total),
             display=str(int(total)),
-            delta=delta_pct(total, prev_total),
+            delta=apply_delta(delta_pct(total, prev_total), rng),
             delta_label="vs previous period",
         ),
     ]
@@ -481,7 +658,8 @@ def build_overview(
             "success_runs": int(num(cur.get("success_runs"))),
             "failed_runs": int(num(cur.get("failed_runs"))),
             "running_runs": int(num(cur.get("running_runs"))),
-            "success_rate_pct": pct(num(cur.get("success_runs")), num(cur.get("total_runs"))),
+            "terminal_runs": int(num(cur.get("terminal_runs"))),
+            "success_rate_pct": pct(num(cur.get("success_runs")), num(cur.get("terminal_runs"))),
         },
     )
 

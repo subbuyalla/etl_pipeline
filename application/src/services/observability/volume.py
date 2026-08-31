@@ -7,7 +7,9 @@ from typing import Any, Optional
 from application.src.api.schemas import make_kpi
 from application.src.services.observability.filters import (
     age_label,
+    apply_delta,
     build_run_where,
+    chart_bucket_grain,
     delta_pct,
     envelope,
     fetchall,
@@ -16,8 +18,10 @@ from application.src.services.observability.filters import (
     num,
     parse_range,
     pct,
+    sql_time_bucket_expr,
     volume_drop_crit_pct,
     volume_drop_warn_pct,
+    zero_fill_series,
 )
 
 
@@ -52,11 +56,14 @@ def _run_volume_totals(conn, from_str: str, to_str: str, *, pipeline_name=None, 
     return fetchone(conn, sql, params)
 
 
-def _per_pipeline_volume(conn, from_str: str, to_str: str, *, pipeline_name=None, pipeline_id=None) -> list[dict]:
+def _per_pipeline_volume(
+    conn, from_str: str, to_str: str, *, pipeline_name=None, pipeline_id=None, tool=None
+) -> list[dict]:
     where, params = build_run_where(
         alias="r",
         pipeline_name=pipeline_name,
         pipeline_id=pipeline_id,
+        tool=tool,
         from_str=from_str,
         to_str=to_str,
     )
@@ -85,17 +92,21 @@ def _per_pipeline_volume(conn, from_str: str, to_str: str, *, pipeline_name=None
     return fetchall(conn, sql, params)
 
 
-def _series_hourly(conn, from_str: str, to_str: str, *, pipeline_name=None, pipeline_id=None) -> list[dict]:
+def _series_volume(
+    conn, from_str: str, to_str: str, *, pipeline_name=None, pipeline_id=None, tool=None, grain="hour"
+) -> list[dict]:
     where, params = build_run_where(
         alias="r",
         pipeline_name=pipeline_name,
         pipeline_id=pipeline_id,
+        tool=tool,
         from_str=from_str,
         to_str=to_str,
     )
+    bucket_expr = sql_time_bucket_expr("r", grain)
     sql = f"""
         SELECT
-          DATE_FORMAT(COALESCE(r.end_time, r.start_time, r.created_at), '%%Y-%%m-%%d %%H:00:00') AS bucket,
+          {bucket_expr} AS bucket,
           COALESCE(SUM(t.target_rows), 0) AS records,
           COALESCE(SUM(t.target_bytes), 0) AS bytes
         FROM obs_pipeline_runs r
@@ -174,8 +185,8 @@ def build_volume_page(
     prev_rows = num(prev.get("total_rows"))
     cur_bytes = num(cur.get("total_bytes"))
     prev_bytes = num(prev.get("total_bytes"))
-    rows_delta = delta_pct(cur_rows, prev_rows)
-    bytes_delta = delta_pct(cur_bytes, prev_bytes)
+    rows_delta = apply_delta(delta_pct(cur_rows, prev_rows), rng)
+    bytes_delta = apply_delta(delta_pct(cur_bytes, prev_bytes), rng)
 
     pipe_count = fetchone(conn, "SELECT COUNT(*) AS n FROM obs_pipelines")
     total_pipelines = int(num(pipe_count.get("n")))
@@ -183,13 +194,13 @@ def build_volume_page(
 
     per = _per_pipeline_volume(
         conn, rng["from_str"], rng["to_str"],
-        pipeline_name=pipeline_name, pipeline_id=pipeline_id,
+        pipeline_name=pipeline_name, pipeline_id=pipeline_id, tool=tool,
     )
     prev_per = {
         r["pipeline_id"]: r
         for r in _per_pipeline_volume(
             conn, rng["prev_from_str"], rng["prev_to_str"],
-            pipeline_name=pipeline_name, pipeline_id=pipeline_id,
+            pipeline_name=pipeline_name, pipeline_id=pipeline_id, tool=tool,
         )
     }
 
@@ -197,7 +208,7 @@ def build_volume_page(
     for r in per:
         pid = r.get("pipeline_id")
         prev_r = prev_per.get(pid) or {}
-        change = delta_pct(num(r.get("records")), num(prev_r.get("records")))
+        change = apply_delta(delta_pct(num(r.get("records")), num(prev_r.get("records"))), rng)
         status = _volume_status(change)
         items.append(
             {
@@ -216,19 +227,30 @@ def build_volume_page(
             }
         )
 
-    series_rows = _series_hourly(
+    grain = chart_bucket_grain(rng)
+    series_rows = _series_volume(
         conn, rng["from_str"], rng["to_str"],
-        pipeline_name=pipeline_name, pipeline_id=pipeline_id,
+        pipeline_name=pipeline_name, pipeline_id=pipeline_id, tool=tool, grain=grain,
+    )
+    raw_labels = [json_val(s.get("bucket")) for s in series_rows]
+    filled_labels, filled = zero_fill_series(
+        raw_labels,
+        {
+            "records": [int(num(s.get("records"))) for s in series_rows],
+            "bytes": [int(num(s.get("bytes"))) for s in series_rows],
+        },
+        rng,
+        grain=grain,
     )
     series = {
         "volume_over_time": [
             {
-                "timestamp": json_val(s.get("bucket")),
-                "records": int(num(s.get("records"))),
-                "bytes": int(num(s.get("bytes"))),
-                "volume_gb": round(num(s.get("bytes")) / (1024**3), 4),
+                "timestamp": lab,
+                "records": rec,
+                "bytes": byt,
+                "volume_gb": round(byt / (1024**3), 4),
             }
-            for s in series_rows
+            for lab, rec, byt in zip(filled_labels, filled["records"], filled["bytes"])
         ]
     }
     charts = {
@@ -310,15 +332,24 @@ def build_volume_page(
 
 
 def volume_health_score(conn, from_str: str, to_str: str, prev_from: str, prev_to: str) -> dict[str, Any]:
-    """Overview pillar: % of pipelines without critical volume drop."""
+    """Overview pillar: % of pipelines without critical volume drop (cur ∪ prev)."""
     cur_list = _per_pipeline_volume(conn, from_str, to_str)
-    prev_map = {r["pipeline_id"]: r for r in _per_pipeline_volume(conn, prev_from, prev_to)}
-    if not cur_list:
+    prev_list = _per_pipeline_volume(conn, prev_from, prev_to)
+    cur_map = {r["pipeline_id"]: r for r in cur_list}
+    prev_map = {r["pipeline_id"]: r for r in prev_list}
+    all_pids = set(cur_map) | set(prev_map)
+    if not all_pids:
         return {"score": None, "available": False, "healthy": 0, "total": 0}
     healthy = 0
-    for r in cur_list:
-        change = delta_pct(num(r.get("records")), num((prev_map.get(r["pipeline_id"]) or {}).get("records")))
+    for pid in all_pids:
+        cur_r = cur_map.get(pid)
+        prev_r = prev_map.get(pid) or {}
+        if cur_r is None:
+            # Had volume previously but missing in current window → severe drop
+            change = -100.0 if num(prev_r.get("records")) > 0 else None
+        else:
+            change = delta_pct(num(cur_r.get("records")), num(prev_r.get("records")))
         if _volume_status(change) == "healthy":
             healthy += 1
-    score = pct(healthy, len(cur_list))
-    return {"score": score, "available": True, "healthy": healthy, "total": len(cur_list)}
+    score = pct(healthy, len(all_pids))
+    return {"score": score, "available": True, "healthy": healthy, "total": len(all_pids)}

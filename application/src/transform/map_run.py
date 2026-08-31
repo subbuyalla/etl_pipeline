@@ -76,9 +76,13 @@ def map_run(
 
     # Prefer caller-provided UUID; otherwise create one.
     resolved_pipeline_id = (pipeline_id or "").strip() or new_pipeline_id()
+    obs_run_id = str(uuid.uuid4())
+    relations = raw.get("relations") or []
+    failed_nodes = raw.get("failed_nodes") or []
 
     return {
-        "id": run_id,
+        "id": run_id,  # vendor / dbt run id — remains primary key for existing reads
+        "obs_run_id": obs_run_id,  # platform correlation id (dual-write)
         "pipeline_id": resolved_pipeline_id,
         "pipeline_name": pipeline_name or str(raw.get("project_name") or ""),
         "status": _map_status(raw.get("status")),
@@ -93,7 +97,10 @@ def map_run(
         "failure_stage": raw.get("failure_stage"),
         "failed_node": raw.get("failed_node"),
         "failed_message": raw.get("failed_message"),
-        "failed_nodes": raw.get("failed_nodes") or [],
+        "failed_nodes": failed_nodes,
+        "relations": relations,
+        "relations_json": json.dumps(relations, default=str) if relations else None,
+        "failed_nodes_json": json.dumps(failed_nodes, default=str) if failed_nodes else None,
         "error_class": raw.get("error_class"),
         "raw_log": json.dumps(raw, default=str),
         "execution_mode": execution_mode,

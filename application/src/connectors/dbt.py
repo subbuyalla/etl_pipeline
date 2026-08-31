@@ -96,7 +96,12 @@ class DbtConnector:
                 return json.loads(resp.read().decode("utf-8"))
         except HTTPError as e:
             body = e.read().decode("utf-8", errors="replace")[:300]
-            raise RuntimeError(f"dbt Cloud API {e.code}: {body}") from e
+            from application.src.connectors.errors import classify_dbt_http_error
+
+            err = classify_dbt_http_error(body, status_code=e.code)
+            raise RuntimeError(
+                f"dbt Cloud API {e.code}: {err['error_code']} — {body}"
+            ) from e
         except URLError as e:
             raise RuntimeError(f"dbt Cloud unreachable: {e}") from e
 
@@ -427,3 +432,107 @@ class DbtConnector:
                 }
             )
         return envelopes
+
+    @staticmethod
+    def manifest_to_edges(manifest: dict) -> list[dict]:
+        """Parse dbt manifest.json nodes into from→to dataset edges."""
+        nodes = manifest.get("nodes") or {}
+        sources = manifest.get("sources") or {}
+        all_nodes = {**sources, **nodes}
+        edges: list[dict] = []
+        seen: set[tuple[str, str]] = set()
+
+        def _dataset(node: dict, uid: str) -> str:
+            rel = node.get("relation_name") or node.get("alias")
+            if rel:
+                return str(rel).replace('"', "").replace("`", "")
+            return str(uid)
+
+        for uid, node in all_nodes.items():
+            if not isinstance(node, dict):
+                continue
+            to_ds = _dataset(node, str(uid))
+            for dep in node.get("depends_on") or []:
+                dep_node = all_nodes.get(dep) or {}
+                from_ds = _dataset(dep_node if isinstance(dep_node, dict) else {}, str(dep))
+                key = (from_ds, to_ds)
+                if from_ds and to_ds and key not in seen:
+                    seen.add(key)
+                    edges.append(
+                        {
+                            "from_dataset": from_ds,
+                            "to_dataset": to_ds,
+                            "edge_kind": "dbt_manifest",
+                            "from_node": str(dep),
+                            "to_node": str(uid),
+                        }
+                    )
+        return edges
+
+    def fetch_test_results(self, run_id: str) -> list[dict]:
+        """Extract dbt test outcomes from run_results.json for DQA + RCA."""
+        data = self._get_optional(
+            f"/accounts/{self.account_id}/runs/{run_id}/artifacts/run_results.json"
+        )
+        if not isinstance(data, dict):
+            return []
+        tests: list[dict] = []
+        for result in data.get("results") or []:
+            if not isinstance(result, dict):
+                continue
+            uid = str(result.get("unique_id") or "")
+            if not uid.startswith("test."):
+                continue
+            status = str(result.get("status") or "").lower()
+            sev = "low"
+            if status in {"fail", "failed", "error"}:
+                sev = "high"
+            elif status in {"warn", "warning"}:
+                sev = "medium"
+            msg = result.get("message") or result.get("error") or ""
+            tests.append(
+                {
+                    "test_id": uid,
+                    "status": status or "unknown",
+                    "severity": sev,
+                    "message": str(msg)[:2000] if msg else None,
+                    "relation_name": result.get("relation_name"),
+                    "execution_time": result.get("execution_time"),
+                }
+            )
+        return tests
+
+    def fetch_manifest_edges(self, run_id: str) -> list[dict]:
+        """Pull manifest.json for a run and return model/source dependency edges."""
+        data = self._get_optional(
+            f"/accounts/{self.account_id}/runs/{run_id}/artifacts/manifest.json"
+        )
+        if not isinstance(data, dict):
+            return []
+        return self.manifest_to_edges(data)
+
+    def fetch_compiled_sql_for_nodes(
+        self, run_id: str, node_ids: list[str], *, max_chars: int = 4000
+    ) -> dict[str, str]:
+        """Return compiled SQL snippets from manifest for failed dbt nodes."""
+        data = self._get_optional(
+            f"/accounts/{self.account_id}/runs/{run_id}/artifacts/manifest.json"
+        )
+        if not isinstance(data, dict):
+            return {}
+        nodes = {**(data.get("nodes") or {}), **(data.get("sources") or {})}
+        out: dict[str, str] = {}
+        want = {str(n).strip() for n in node_ids if n}
+        for uid in want:
+            node = nodes.get(uid) if uid.startswith(("model.", "seed.", "snapshot.")) else None
+            if node is None:
+                for key, candidate in nodes.items():
+                    if str(key).endswith(uid) or str(uid) in str(key):
+                        node = candidate
+                        break
+            if not isinstance(node, dict):
+                continue
+            sql = node.get("compiled_code") or node.get("raw_code") or ""
+            if sql:
+                out[uid] = str(sql)[:max_chars]
+        return out

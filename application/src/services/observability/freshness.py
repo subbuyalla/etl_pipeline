@@ -42,13 +42,31 @@ def classify_lag(lag_hours: float | None, sla_hours: float) -> str:
     return "stale"
 
 
-def load_pipeline_freshness(conn, *, pipeline_name: Optional[str] = None, pipeline_id: Optional[str] = None) -> list[dict]:
+def load_pipeline_freshness(
+    conn,
+    *,
+    pipeline_name: Optional[str] = None,
+    pipeline_id: Optional[str] = None,
+    as_of: Optional[datetime] = None,
+) -> list[dict]:
     """
     One row per pipeline:
     last_success_at = max TARGET last_updated_at on latest successful run,
     else last successful run end_time/start_time.
+
+    When as_of is set (range end), lag is computed vs that timestamp and the
+    latest success is restricted to runs finishing on/before as_of.
     """
-    # Latest successful run per pipeline
+    as_of_dt = as_of
+    if as_of_dt is not None and not isinstance(as_of_dt, datetime):
+        as_of_dt = _parse_ts(as_of_dt)
+    as_of_clause = ""
+    as_of_params: list[Any] = []
+    if as_of_dt is not None:
+        as_of_clause = " AND COALESCE(r.end_time, r.start_time, r.created_at) <= %s"
+        as_of_params.append(as_of_dt.strftime("%Y-%m-%d %H:%M:%S"))
+
+    # Latest successful run per pipeline (optionally as-of range end)
     sql = f"""
         SELECT
           p.pipeline_id,
@@ -73,13 +91,14 @@ def load_pipeline_freshness(conn, *, pipeline_name: Optional[str] = None, pipeli
             FROM obs_pipeline_runs r
             WHERE r.pipeline_id = p.pipeline_id
               AND LOWER(COALESCE(r.status, '')) IN ('success', 'succeeded')
+              {as_of_clause}
             ORDER BY COALESCE(r.end_time, r.start_time, r.created_at) DESC
             LIMIT 1
           )
     """
     # Optional filter on pipeline list
     extra_clauses = []
-    extra_params: list[Any] = []
+    extra_params: list[Any] = list(as_of_params)
     if pipeline_name:
         names = [n.strip() for n in pipeline_name.split(",") if n.strip()]
         if names:
@@ -99,7 +118,7 @@ def load_pipeline_freshness(conn, *, pipeline_name: Optional[str] = None, pipeli
     rows = fetchall(conn, sql, extra_params)
 
     sla = freshness_sla_hours()
-    now = utc_now()
+    now = as_of_dt or utc_now()
     out = []
     for r in rows:
         last_success = _parse_ts(r.get("target_last_updated_at")) or _parse_ts(
@@ -120,6 +139,7 @@ def load_pipeline_freshness(conn, *, pipeline_name: Optional[str] = None, pipeli
                 "last_updated_at": json_val(last_success),
                 "last_updated_age": age_label(last_success, now),
                 "sla_hours": sla,
+                "as_of": json_val(as_of_dt) if as_of_dt else None,
                 "current_lag_hours": round(lag_hours, 2) if lag_hours is not None else None,
                 "current_lag_display": (
                     f"{int(lag_hours)}h" if lag_hours is not None and lag_hours >= 1
@@ -163,7 +183,10 @@ def build_freshness_page(
     page_size: int = 20,
 ) -> dict[str, Any]:
     rng = parse_range(preset, start_date, end_date, start_time, end_time)
-    rows = load_pipeline_freshness(conn, pipeline_name=pipeline_name, pipeline_id=pipeline_id)
+    as_of = rng.get("to") if str(rng.get("preset") or "").lower() != "all" else None
+    rows = load_pipeline_freshness(
+        conn, pipeline_name=pipeline_name, pipeline_id=pipeline_id, as_of=as_of
+    )
     summary = freshness_summary(rows)
     total = len(rows)
     page = max(1, int(page or 1))
@@ -221,9 +244,11 @@ def build_freshness_page(
         summary=summary,
         meta={
             "formula": (
-                "lag = now - last_success_at; last_success_at = TARGET.last_updated_at "
-                "or last success end_time. Fresh<=SLA, Delayed<=2*SLA, else Stale."
+                "lag = as_of - last_success_at; last_success_at = TARGET.last_updated_at "
+                "or last success end_time (success on/before as_of when range set). "
+                "Fresh<=SLA, Delayed<=2*SLA, else Stale. preset=all uses now."
             ),
             "sla_hours": freshness_sla_hours(),
+            "as_of": json_val(as_of) if as_of else "now",
         },
     )

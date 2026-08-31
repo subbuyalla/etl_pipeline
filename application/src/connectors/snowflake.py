@@ -67,7 +67,15 @@ class SnowflakeConnector:
                 "details": {"version": version},
             }
         except Exception as e:
-            return {"ok": False, "message": str(e)}
+            from application.src.connectors.errors import classify_snowflake_error
+
+            err = classify_snowflake_error(str(e))
+            return {
+                "ok": False,
+                "message": str(e),
+                "error_code": err["error_code"],
+                "error_hint": err["error_hint"],
+            }
 
     def get_databases(self):
         """get the databases from snowflake"""
@@ -97,7 +105,7 @@ class SnowflakeConnector:
                 self.cursor.execute(f"USE DATABASE {self.database_id}")
 
             sql = """
-                SELECT TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ROW_COUNT, LAST_ALTERED
+                SELECT TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ROW_COUNT, BYTES, LAST_ALTERED
                 FROM INFORMATION_SCHEMA.TABLES
                 WHERE TABLE_TYPE = 'BASE TABLE'
             """
@@ -114,7 +122,7 @@ class SnowflakeConnector:
             self.cursor.execute(sql, params or None)
 
             rows: list[dict] = []
-            for catalog, schema, table, row_count, last_altered in self.cursor.fetchall():
+            for catalog, schema, table, row_count, size_bytes, last_altered in self.cursor.fetchall():
                 rows.append(
                     {
                         "database": catalog,
@@ -122,6 +130,7 @@ class SnowflakeConnector:
                         "table": table,
                         "dataset_id": f"{catalog}.{schema}.{table}",
                         "row_count": row_count,
+                        "size_bytes": size_bytes,
                         "last_altered": (
                             last_altered.isoformat()
                             if hasattr(last_altered, "isoformat")
@@ -284,6 +293,85 @@ class SnowflakeConnector:
             except Exception:
                 pass
 
+    def run_column_validation(
+        self,
+        *,
+        dataset_id: str,
+        column_name: str,
+        check_type: str,
+        custom_sql: str | None = None,
+        expected_max: int = 0,
+    ) -> dict[str, Any]:
+        from application.src.connectors.validation import (
+            build_observed_result,
+            parse_dataset_fqn,
+            quote_ident_double,
+        )
+
+        db, schema, table = parse_dataset_fqn(dataset_id)
+        parts = [db, schema, table]
+        col = str(column_name or "").strip()
+        if not col:
+            raise ValueError("column_name is required")
+        fqn = ".".join(quote_ident_double(p) for p in parts)
+        col_q = quote_ident_double(col.upper())
+        kind = (check_type or "").lower()
+
+        self._connect()
+        try:
+            if self.database_id:
+                self.cursor.execute(f"USE DATABASE {quote_ident_double(self.database_id)}")
+            if self.warehouse_id:
+                self.cursor.execute(f"USE WAREHOUSE {quote_ident_double(self.warehouse_id)}")
+
+            if kind == "custom_sql" and custom_sql:
+                self.cursor.execute(custom_sql)
+                row = self.cursor.fetchone()
+                actual = int(row[0]) if row else 0
+                return build_observed_result(
+                    check_type="CUSTOM_SQL",
+                    parts=parts,
+                    column_name=col,
+                    actual_value=actual,
+                    expected_max=expected_max,
+                )
+
+            if kind in {"null_check", "null_pct"}:
+                self.cursor.execute(
+                    f"SELECT COUNT(*) AS total_rows, COUNT({col_q}) AS non_null_rows FROM {fqn}"
+                )
+                total, non_null = self.cursor.fetchone()
+                null_count = int(total or 0) - int(non_null or 0)
+                return build_observed_result(
+                    check_type="NOT_NULL",
+                    parts=parts,
+                    column_name=col,
+                    actual_value=null_count,
+                    expected_max=expected_max,
+                )
+
+            if kind in {"unique_check", "unique_violation", "duplicate_check", "duplicate_count"}:
+                self.cursor.execute(
+                    f"SELECT COUNT(*) - COUNT(DISTINCT {col_q}) AS dup_count FROM {fqn}"
+                )
+                dup_count = int((self.cursor.fetchone() or [0])[0] or 0)
+                ctype = "UNIQUE" if "unique" in kind else "DUPLICATE"
+                return build_observed_result(
+                    check_type=ctype,
+                    parts=parts,
+                    column_name=col,
+                    actual_value=dup_count,
+                    expected_max=expected_max,
+                )
+
+            raise ValueError(f"Unsupported check_type: {check_type}")
+        finally:
+            try:
+                self.cursor.close()
+                self.connection.close()
+            except Exception:
+                pass
+
     def pull_state(self) -> list[dict]:
         """
         Sync payload: wrap each table as an envelope for Metadata later.
@@ -302,6 +390,7 @@ class SnowflakeConnector:
                         "table": row["table"],
                         "dataset_id": row["dataset_id"],
                         "row_count": row.get("row_count"),
+                        "size_bytes": row.get("size_bytes"),
                         "last_altered": row.get("last_altered"),
                     },
                 }

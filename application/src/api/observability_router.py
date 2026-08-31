@@ -4,6 +4,9 @@
 
 from __future__ import annotations
 
+import json
+import os
+from datetime import datetime
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Query
@@ -21,7 +24,10 @@ from application.src.services.observability.filters import (
     num,
     parse_range,
 )
-from application.src.services.observability.freshness import build_freshness_page
+from application.src.services.observability.freshness import (
+    build_freshness_page,
+    load_pipeline_freshness,
+)
 from application.src.services.observability.incidents import (
     build_incidents_page,
     get_incident,
@@ -32,6 +38,8 @@ from application.src.services.observability.lineage import (
     build_lineage_page,
 )
 from application.src.services.observability.metrics import build_metrics_page
+from application.src.services.observability.quality import build_quality_page
+from application.src.services.observability.rca_context import build_rca_context
 from application.src.services.observability.overview import (
     build_overview,
     build_overview_charts,
@@ -44,9 +52,9 @@ from application.src.services.observability.overview import (
 )
 from application.src.services.observability.schema_diff import build_schema_page
 from application.src.services.observability.volume import build_volume_page
-from application.src.store.meta_mysql import get_connection as db_connect
+from application.src.store.meta_mysql import get_connection as db_connect, list_collector_heartbeats
 
-router = APIRouter(tags=["Dashboard API v1"])
+router = APIRouter()
 
 
 def _conn():
@@ -91,12 +99,50 @@ _ED = "End date YYYY-MM-DD"
 # Health
 # =============================================================================
 
-@router.get("/health", summary="API & DB health")
+@router.get("/health", tags=["Dashboard / Health & filters"], summary="API & DB health", description="Checks API process and metadata MySQL connectivity.")
 def api_v1_health() -> dict[str, Any]:
     conn = _conn()
     try:
         fetchone(conn, "SELECT 1 AS ok")
-        return {"ok": True, "status": "ok", "database": "connected"}
+        collectors_raw = list_collector_heartbeats(conn)
+        try:
+            interval = int(os.getenv("SYNC_INTERVAL_SECONDS") or "300")
+        except ValueError:
+            interval = 300
+        stale_seconds = 2 * interval
+        now = datetime.utcnow()
+        degraded = False
+        collectors: list[dict[str, Any]] = []
+        for row in collectors_raw:
+            last = row.get("last_success_at")
+            stale = False
+            age_seconds: float | None = None
+            if isinstance(last, datetime):
+                age_seconds = (now - last).total_seconds()
+                stale = age_seconds > stale_seconds
+            elif last is None:
+                stale = True
+            if stale:
+                degraded = True
+            collectors.append(
+                {
+                    "pipeline_id": row.get("pipeline_id"),
+                    "pipeline_name": row.get("pipeline_name"),
+                    "collector": row.get("collector"),
+                    "last_success_at": json_val(last),
+                    "last_error": row.get("last_error"),
+                    "stale": stale,
+                    "age_seconds": round(age_seconds, 1) if age_seconds is not None else None,
+                }
+            )
+        return {
+            "ok": True,
+            "status": "degraded" if degraded else "ok",
+            "degraded": degraded,
+            "database": "connected",
+            "collectors": collectors,
+            "collector_stale_after_seconds": stale_seconds,
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Database unavailable: {e}") from e
     finally:
@@ -107,7 +153,7 @@ def api_v1_health() -> dict[str, Any]:
 # Filter lookups (status/tool/presets; pipelines live under /pipelines/catalog)
 # =============================================================================
 
-@router.get("/filters", summary="All filter options (pipelines, status, tool, presets)")
+@router.get("/filters", tags=["Dashboard / Health & filters"], summary="Filter catalog", description="Pipelines, statuses, tools, and time presets for UI dropdowns.")
 def filter_catalog(
     q: Optional[str] = Query(None, description="Optional search on pipeline id or name"),
 ) -> dict[str, Any]:
@@ -122,7 +168,7 @@ def filter_catalog(
 # Overview
 # =============================================================================
 
-@router.get("/overview", summary="Full Overview dashboard payload")
+@router.get("/overview", tags=["Dashboard / Overview"], summary="Full Overview payload", description="Combined Overview page: KPIs, charts, health, incidents, pipelines.")
 def overview(
     preset: Optional[str] = Query("24h", description=_PRE),
     start_date: Optional[str] = Query(None, description=_SD),
@@ -149,7 +195,7 @@ def overview(
         conn.close()
 
 
-@router.get("/overview/kpis", summary="Overview KPI cards")
+@router.get("/overview/kpis", tags=["Dashboard / Overview"], summary="Overview KPI cards")
 def overview_kpis(
     preset: Optional[str] = Query("24h", description=_PRE),
     start_date: Optional[str] = Query(None),
@@ -176,7 +222,7 @@ def overview_kpis(
         conn.close()
 
 
-@router.get("/overview/charts", summary="Overview time-series charts")
+@router.get("/overview/charts", tags=["Dashboard / Overview"], summary="Overview time-series charts")
 def overview_charts(
     preset: Optional[str] = Query("24h", description=_PRE),
     start_date: Optional[str] = Query(None),
@@ -209,7 +255,7 @@ def overview_charts(
         conn.close()
 
 
-@router.get("/overview/health", summary="Observability health pillars")
+@router.get("/overview/health", tags=["Dashboard / Overview"], summary="Observability health pillars")
 def overview_health(
     preset: Optional[str] = Query("24h", description=_PRE),
     start_date: Optional[str] = Query(None),
@@ -232,7 +278,7 @@ def overview_health(
         conn.close()
 
 
-@router.get("/overview/recent-incidents", summary="Recent open incidents")
+@router.get("/overview/recent-incidents", tags=["Dashboard / Overview"], summary="Recent open incidents")
 def overview_recent_incidents(
     preset: Optional[str] = Query("24h", description=_PRE),
     start_date: Optional[str] = Query(None),
@@ -273,7 +319,7 @@ def overview_recent_incidents(
         conn.close()
 
 
-@router.get("/overview/pipelines", summary="Overview pipeline monitoring table")
+@router.get("/overview/pipelines", tags=["Dashboard / Overview"], summary="Overview pipeline table")
 def overview_pipelines(
     preset: Optional[str] = Query("24h", description=_PRE),
     start_date: Optional[str] = Query(None),
@@ -307,7 +353,7 @@ def overview_pipelines(
 # Pipelines
 # =============================================================================
 
-@router.get("/pipelines/catalog", summary="Pipeline id + name list (for dropdown / click)")
+@router.get("/pipelines/catalog", tags=["Dashboard / Pipelines"], summary="Pipeline catalog", description="Lean id+name list for dropdowns; also refreshes is_operational.")
 def pipelines_catalog(
     q: Optional[str] = Query(None, description="Optional search on pipeline id or name"),
 ) -> dict[str, Any]:
@@ -328,7 +374,7 @@ def pipelines_catalog(
         conn.close()
 
 
-@router.get("/pipelines", summary="Pipelines list + KPI strip")
+@router.get("/pipelines", tags=["Dashboard / Pipelines"], summary="Pipelines list + KPIs")
 def pipelines_list(
     preset: Optional[str] = Query("24h", description=_PRE),
     start_date: Optional[str] = Query(None),
@@ -357,7 +403,7 @@ def pipelines_list(
         conn.close()
 
 
-@router.get("/pipelines/{pipeline_id}", summary="Full pipeline details by id")
+@router.get("/pipelines/{pipeline_id}", tags=["Dashboard / Pipelines"], summary="Pipeline detail", description="Source / ETL / target + last run for one pipeline.")
 def pipeline_detail(pipeline_id: str) -> dict[str, Any]:
     conn = _conn()
     try:
@@ -369,7 +415,7 @@ def pipeline_detail(pipeline_id: str) -> dict[str, Any]:
         conn.close()
 
 
-@router.get("/pipelines/{pipeline_id}/runs", summary="Pipeline runs")
+@router.get("/pipelines/{pipeline_id}/runs", tags=["Dashboard / Pipelines"], summary="Pipeline runs")
 def pipeline_runs(
     pipeline_id: str,
     preset: Optional[str] = Query("all", description=_PRE),
@@ -405,7 +451,7 @@ def pipeline_runs(
 # Observability pages
 # =============================================================================
 
-@router.get("/observability/freshness", summary="Freshness page")
+@router.get("/observability/freshness", tags=["Dashboard / Observability"], summary="Freshness page")
 def freshness_page(
     preset: Optional[str] = Query("24h", description=_PRE),
     start_date: Optional[str] = Query(None),
@@ -435,7 +481,7 @@ def freshness_page(
         conn.close()
 
 
-@router.get("/observability/volume", summary="Volume page")
+@router.get("/observability/volume", tags=["Dashboard / Observability"], summary="Volume page")
 def volume_page(
     preset: Optional[str] = Query("24h", description=_PRE),
     start_date: Optional[str] = Query(None),
@@ -467,7 +513,7 @@ def volume_page(
         conn.close()
 
 
-@router.get("/observability/quality", summary="Data Quality page (N/A until checks exist)")
+@router.get("/observability/quality", tags=["Dashboard / Observability"], summary="Data Quality page", description="Check results from monitors and dbt tests.")
 def quality_page(
     preset: Optional[str] = Query("24h", description=_PRE),
     start_date: Optional[str] = Query(None),
@@ -476,35 +522,46 @@ def quality_page(
     end_time: Optional[str] = Query(None),
     pipeline_name: Optional[str] = Query(None),
     pipeline_id: Optional[str] = Query(None),
+    score_mode: Optional[str] = Query(
+        "time_window",
+        description="time_window | last_run — MC-style last-run score uses last_run",
+    ),
+    source: Optional[str] = Query(
+        "all",
+        description="all | dbt | monitor — split validation vs operational checks",
+    ),
+    dataset_id: Optional[str] = Query(
+        None,
+        description="Filter to one dataset (e.g. ANALYTICS.MART.FCT_ORDERS)",
+    ),
+    tag: Optional[str] = Query(None, description="Filter by tag (e.g. team:finance)"),
+    dimension: Optional[str] = Query(
+        None,
+        description="Filter by DQ dimension: completeness, uniqueness, accuracy, validity, timeliness",
+    ),
 ) -> dict[str, Any]:
-    rng = parse_range(preset, start_date, end_date, start_time, end_time)
-    kpis = [
-        make_kpi(id="quality_status", title="Quality Status", available=False),
-        make_kpi(id="checks_run", title="Checks Run", available=False),
-        make_kpi(id="passed", title="Passed", available=False),
-        make_kpi(id="warning", title="Warning", available=False),
-        make_kpi(id="failed", title="Failed", available=False),
-    ]
-    return envelope(
-        rng=rng,
-        filters_applied={
-            "pipeline_name": pipeline_name,
-            "pipeline_id": pipeline_id,
-            "preset": rng.get("preset"),
-        },
-        kpis=kpis,
-        series={"quality_score_over_time": []},
-        charts={"checks_by_status": {"passed": 0, "warning": 0, "failed": 0, "total": 0}},
-        items=[],
-        meta={
-            "available": False,
-            "reason": "No DQ check_results in obs_*. Contract reserved for frontend.",
-        },
-        summary={"available": False},
-    )
+    conn = _conn()
+    try:
+        return build_quality_page(
+            conn,
+            preset=preset,
+            start_date=start_date,
+            end_date=end_date,
+            start_time=start_time,
+            end_time=end_time,
+            pipeline_name=pipeline_name,
+            pipeline_id=pipeline_id,
+            score_mode=score_mode or "time_window",
+            source=source or "all",
+            dataset_id=dataset_id,
+            tag=tag,
+            dimension=dimension,
+        )
+    finally:
+        conn.close()
 
 
-@router.get("/observability/schema", summary="Schema drift page")
+@router.get("/observability/schema", tags=["Dashboard / Observability"], summary="Schema drift page")
 def schema_page(
     preset: Optional[str] = Query("24h", description=_PRE),
     start_date: Optional[str] = Query(None),
@@ -536,7 +593,7 @@ def schema_page(
 # Lineage / Incidents / Metrics / Logs / Alerts / Runs
 # =============================================================================
 
-@router.get("/lineage", summary="Lineage graph + pipeline hops")
+@router.get("/lineage", tags=["Dashboard / Lineage"], summary="Lineage graph")
 def lineage_page(
     preset: Optional[str] = Query("24h", description=_PRE),
     start_date: Optional[str] = Query(None),
@@ -562,7 +619,7 @@ def lineage_page(
         conn.close()
 
 
-@router.get("/lineage/{pipeline_id}", summary="Lineage detail for one pipeline")
+@router.get("/lineage/{pipeline_id}", tags=["Dashboard / Lineage"], summary="Lineage detail")
 def lineage_detail(pipeline_id: str) -> dict[str, Any]:
     conn = _conn()
     try:
@@ -574,7 +631,7 @@ def lineage_detail(pipeline_id: str) -> dict[str, Any]:
         conn.close()
 
 
-@router.get("/incidents", summary="Incidents page")
+@router.get("/incidents", tags=["Dashboard / Incidents & alerts"], summary="Incidents list")
 def incidents_page(
     preset: Optional[str] = Query("7d", description=_PRE),
     start_date: Optional[str] = Query(None),
@@ -606,7 +663,7 @@ def incidents_page(
         conn.close()
 
 
-@router.get("/incidents/{incident_id}", summary="Single incident detail")
+@router.get("/incidents/{incident_id}", tags=["Dashboard / Incidents & alerts"], summary="Incident detail")
 def incident_detail(incident_id: str) -> dict[str, Any]:
     conn = _conn()
     try:
@@ -626,7 +683,7 @@ def incident_detail(incident_id: str) -> dict[str, Any]:
         conn.close()
 
 
-@router.get("/metrics", summary="Metrics page")
+@router.get("/metrics", tags=["Dashboard / Metrics & logs"], summary="Metrics page")
 def metrics_page(
     preset: Optional[str] = Query("15m", description=_PRE),
     start_date: Optional[str] = Query(None),
@@ -658,7 +715,7 @@ def metrics_page(
         conn.close()
 
 
-@router.get("/logs", summary="Execution logs (from pipeline runs)")
+@router.get("/logs", tags=["Dashboard / Metrics & logs"], summary="Execution logs")
 def logs_page(
     preset: Optional[str] = Query("24h", description=_PRE),
     start_date: Optional[str] = Query(None),
@@ -693,6 +750,17 @@ def logs_page(
             )
             q = f"%{search.strip()}%"
             params = list(params) + [q, q, q]
+        # Level filter in SQL before pagination (ERROR/WARN/INFO mapped from status)
+        if level and level.strip():
+            lvl = level.strip().upper()
+            if lvl == "ERROR":
+                extra.append("LOWER(COALESCE(r.status,'')) IN ('failed','error')")
+            elif lvl == "WARN":
+                extra.append("LOWER(COALESCE(r.status,'')) IN ('running','cancelled')")
+            elif lvl == "INFO":
+                extra.append(
+                    "LOWER(COALESCE(r.status,'')) NOT IN ('failed','error','running','cancelled')"
+                )
         if extra:
             where = (where + " AND " if where else "WHERE ") + " AND ".join(extra)
 
@@ -727,8 +795,6 @@ def logs_page(
         items = []
         for r in rows:
             lvl = level_for(str(r.get("status") or ""))
-            if level and lvl.upper() != level.strip().upper():
-                continue
             msg = r.get("error_message") or (
                 f"Run {r.get('status')} — {r.get('rows_written') or 0} rows written"
             )
@@ -812,23 +878,38 @@ def logs_page(
         conn.close()
 
 
-@router.get("/runs/{run_id}", summary="Single run detail")
+@router.get("/runs/{run_id}", tags=["Dashboard / Metrics & logs"], summary="Run detail", description="Resolve by run id or obs_run_id.")
 def run_detail(run_id: str) -> dict[str, Any]:
     conn = _conn()
     try:
-        runs = fetchall(conn, "SELECT * FROM obs_pipeline_runs WHERE id = %s", (run_id,))
+        runs = fetchall(
+            conn,
+            "SELECT * FROM obs_pipeline_runs WHERE id = %s OR obs_run_id = %s LIMIT 1",
+            (run_id, run_id),
+        )
         if not runs:
             raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
         run = runs[0]
-        assets = fetchall(conn, "SELECT * FROM obs_run_assets WHERE run_id = %s", (run_id,))
-        columns = fetchall(conn, "SELECT * FROM obs_run_columns WHERE run_id = %s", (run_id,))
+        rid = str(run.get("id") or run_id)
+        assets = fetchall(conn, "SELECT * FROM obs_run_assets WHERE run_id = %s", (rid,))
+        columns = fetchall(conn, "SELECT * FROM obs_run_columns WHERE run_id = %s", (rid,))
         queries = fetchall(
-            conn, "SELECT * FROM obs_run_query_history WHERE run_id = %s", (run_id,)
+            conn, "SELECT * FROM obs_run_query_history WHERE run_id = %s", (rid,)
         )
         raw_log = run.get("raw_log")
-        run_out = {k: json_val(v) for k, v in run.items() if k != "raw_log"}
+        run_out = {k: json_val(v) for k, v in run.items() if k not in {"raw_log", "relations_json", "failed_nodes_json"}}
         run_out["raw_log"] = raw_log
         run_out["duration_display"] = format_duration(run.get("duration"))
+        try:
+            rel = run.get("relations_json")
+            run_out["relations"] = json.loads(rel) if isinstance(rel, str) and rel else (rel or [])
+        except json.JSONDecodeError:
+            run_out["relations"] = []
+        try:
+            fn = run.get("failed_nodes_json")
+            run_out["failed_nodes"] = json.loads(fn) if isinstance(fn, str) and fn else (fn or [])
+        except json.JSONDecodeError:
+            run_out["failed_nodes"] = []
         rng = parse_range("all")
         return envelope(
             rng=rng,
@@ -845,27 +926,192 @@ def run_detail(run_id: str) -> dict[str, Any]:
         conn.close()
 
 
-@router.get("/alerts", summary="Alerts page (empty until alert store exists)")
+@router.get(
+    "/runs/{run_id}/rca-context",
+    tags=["Dashboard / Metrics & logs"],
+    summary="RCA context bundle",
+    description=(
+        "Grounded failure context for triage and AI: run, failed nodes, relations, "
+        "assets, columns, query history, lineage upstream slice, dbt tests."
+    ),
+)
+def run_rca_context(run_id: str) -> dict[str, Any]:
+    conn = _conn()
+    try:
+        ctx = build_rca_context(conn, run_id)
+        rng = parse_range("all")
+        return envelope(
+            rng=rng,
+            filters_applied={"run_id": run_id},
+            items=[],
+            meta=ctx,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    finally:
+        conn.close()
+
+
+@router.get("/alerts", tags=["Dashboard / Incidents & alerts"], summary="Alerts list")
 def alerts_page(
     preset: Optional[str] = Query("24h", description=_PRE),
     start_date: Optional[str] = Query(None),
     end_date: Optional[str] = Query(None),
+    status: Optional[str] = Query("open"),
 ) -> dict[str, Any]:
+    from application.src.services.observability.lifecycle import list_alerts
+
     rng = parse_range(preset, start_date, end_date, None, None)
-    kpis = [
-        make_kpi(id="open_alerts", title="Open Alerts", value=0, display="0"),
-        make_kpi(id="critical_alerts", title="Critical", value=0, display="0"),
-        make_kpi(id="acked_alerts", title="Acknowledged", value=0, display="0"),
-        make_kpi(id="resolved_alerts", title="Resolved", value=0, display="0"),
-    ]
-    return envelope(
-        rng=rng,
-        filters_applied={"preset": rng.get("preset")},
-        kpis=kpis,
-        items=[],
-        meta={
-            "available": False,
-            "reason": "No etl_alerts / alert store wired to obs_* yet. Stable empty contract for FE.",
-        },
-        summary={"available": False, "open": 0},
-    )
+    conn = _conn()
+    try:
+        items = list_alerts(conn, status=status)
+        open_n = sum(1 for a in items if a.get("status") == "open")
+        crit_n = sum(
+            1
+            for a in items
+            if a.get("status") == "open" and str(a.get("severity") or "").lower() == "critical"
+        )
+        acked_n = sum(1 for a in items if a.get("status") == "acked")
+        resolved_n = sum(1 for a in items if a.get("status") == "resolved")
+        available = True
+        kpis = [
+            make_kpi(id="open_alerts", title="Open Alerts", value=open_n, display=str(open_n), tone="bad" if open_n else "ok"),
+            make_kpi(id="critical_alerts", title="Critical", value=crit_n, display=str(crit_n), tone="bad" if crit_n else "ok"),
+            make_kpi(id="acked_alerts", title="Acknowledged", value=acked_n, display=str(acked_n)),
+            make_kpi(id="resolved_alerts", title="Resolved", value=resolved_n, display=str(resolved_n)),
+        ]
+        return envelope(
+            rng=rng,
+            filters_applied={"preset": rng.get("preset"), "status": status},
+            kpis=kpis,
+            items=[{k: json_val(v) for k, v in a.items()} for a in items],
+            meta={"available": available, "reason": None},
+            summary={"available": available, "open": open_n},
+        )
+    finally:
+        conn.close()
+
+
+@router.post("/ops/evaluate-monitors", tags=["Dashboard / Ops"], summary="Evaluate monitors", description="Run monitor evaluation → alerts/incidents.")
+def ops_evaluate_monitors() -> dict[str, Any]:
+    from application.src.services.observability.lifecycle import evaluate_monitors
+
+    conn = _conn()
+    try:
+        return evaluate_monitors(conn)
+    finally:
+        conn.close()
+
+
+@router.post(
+    "/ops/evaluate-dq-rules",
+    tags=["Dashboard / Ops"],
+    summary="Evaluate DQ rules",
+    description="Run obs_dq_rules evaluation → obs_check_results.",
+)
+def ops_evaluate_dq_rules(
+    pipeline_id: Optional[str] = Query(None, description="Limit to one pipeline"),
+) -> dict[str, Any]:
+    from application.src.services.observability.dq_rules import evaluate_dq_rules
+
+    conn = _conn()
+    try:
+        return evaluate_dq_rules(conn, pipeline_id=pipeline_id)
+    finally:
+        conn.close()
+
+
+@router.post("/ops/rollup-daily", tags=["Dashboard / Ops"], summary="Daily metric rollups")
+def ops_rollup_daily(day: Optional[str] = Query(None, description="YYYY-MM-DD")) -> dict[str, Any]:
+    from application.src.store.meta_mysql import rollup_daily_metrics, rollup_dq_daily_metrics
+
+    conn = _conn()
+    try:
+        n = rollup_daily_metrics(conn, day=day)
+        dq_n = rollup_dq_daily_metrics(conn, day=day)
+        return {"ok": True, "upserted": n, "dq_upserted": dq_n, "day": day}
+    finally:
+        conn.close()
+
+
+@router.post("/ops/purge-raw", tags=["Dashboard / Ops"], summary="Purge raw observations")
+def ops_purge_raw() -> dict[str, Any]:
+    from application.src.store.meta_mysql import purge_raw_observations
+
+    conn = _conn()
+    try:
+        return {"ok": True, "deleted": purge_raw_observations(conn)}
+    finally:
+        conn.close()
+
+
+@router.post("/ops/migrate-bindings", tags=["Dashboard / Ops"], summary="Migrate pipeline bindings")
+def ops_migrate_bindings() -> dict[str, Any]:
+    from application.src.store.meta_mysql import migrate_pipeline_bindings
+
+    conn = _conn()
+    try:
+        n = migrate_pipeline_bindings(conn)
+        return {"ok": True, "pipelines": n}
+    finally:
+        conn.close()
+
+
+@router.get("/pipelines/{pipeline_id}/bindings", tags=["Dashboard / Pipelines"], summary="Pipeline bindings", description="Declared SOURCE / ETL / TARGET tool bindings.")
+def pipeline_bindings(pipeline_id: str) -> dict[str, Any]:
+    from application.src.store.meta_mysql import list_pipeline_bindings
+
+    conn = _conn()
+    try:
+        items = list_pipeline_bindings(conn, pipeline_id)
+        rng = parse_range("all")
+        return envelope(
+            rng=rng,
+            filters_applied={"pipeline_id": pipeline_id},
+            items=[{k: json_val(v) for k, v in i.items()} for i in items],
+            total=len(items),
+        )
+    finally:
+        conn.close()
+
+
+@router.get(
+    "/pipelines/{pipeline_id}/monitors",
+    tags=["Dashboard / Pipelines"],
+    summary="Pipeline monitors",
+    description="Read-only list of DQ / operational monitors for one pipeline.",
+)
+def pipeline_monitors(pipeline_id: str) -> dict[str, Any]:
+    from application.src.store.meta_mysql import list_monitors
+
+    conn = _conn()
+    try:
+        items = list_monitors(conn, pipeline_id=pipeline_id)
+        rng = parse_range("all")
+        return envelope(
+            rng=rng,
+            filters_applied={"pipeline_id": pipeline_id},
+            items=items,
+            monitors=items,
+            total=len(items),
+        )
+    finally:
+        conn.close()
+
+
+@router.get("/connectors/types", tags=["Dashboard / Tools catalog"], summary="Connector types")
+def connector_types() -> dict[str, Any]:
+    from application.src.connectors.registry import list_connector_types
+
+    return {"ok": True, "items": list_connector_types()}
+
+
+@router.get("/tools", tags=["Dashboard / Tools catalog"], summary="List tools (read-only)", description="UI catalog. Create/update tools via POST /v1/tools.")
+def api_list_tools(
+    kind: str | None = Query(default=None),
+    connector_type: str | None = Query(default=None),
+) -> dict[str, Any]:
+    from application.src.store.meta_mysql import list_tools
+
+    return {"ok": True, "items": list_tools(kind=kind, connector_type=connector_type)}
+

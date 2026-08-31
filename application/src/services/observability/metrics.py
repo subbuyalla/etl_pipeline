@@ -7,6 +7,7 @@ from typing import Any, Optional
 from application.src.api.schemas import make_kpi
 from application.src.services.observability.filters import (
     age_label,
+    apply_delta,
     build_run_where,
     delta_pct,
     envelope,
@@ -40,6 +41,10 @@ def _run_stats(conn, from_str, to_str, **filters) -> dict:
           SUM(CASE WHEN LOWER(COALESCE(status,'')) IN ('success','succeeded') THEN 1 ELSE 0 END) AS success_runs,
           SUM(CASE WHEN LOWER(COALESCE(status,'')) IN ('failed','error') THEN 1 ELSE 0 END) AS failed_runs,
           SUM(CASE WHEN LOWER(COALESCE(status,'')) = 'running' THEN 1 ELSE 0 END) AS running_runs,
+          SUM(
+            CASE WHEN LOWER(COALESCE(status,'')) IN
+              ('success','succeeded','failed','error','cancelled') THEN 1 ELSE 0 END
+          ) AS terminal_runs,
           AVG(duration) AS avg_duration
         FROM obs_pipeline_runs r
         {where}
@@ -70,16 +75,21 @@ def build_metrics_page(
     total = num(cur.get("total_runs"))
     success = num(cur.get("success_runs"))
     failed = num(cur.get("failed_runs"))
+    terminal = num(cur.get("terminal_runs"))
     avg_dur = num(cur.get("avg_duration")) if cur.get("avg_duration") is not None else None
-    success_rate = pct(success, total)
+    success_rate = pct(success, terminal)
 
     prev_total = num(prev.get("total_runs"))
     prev_success = num(prev.get("success_runs"))
     prev_failed = num(prev.get("failed_runs"))
+    prev_terminal = num(prev.get("terminal_runs"))
     prev_avg = num(prev.get("avg_duration")) if prev.get("avg_duration") is not None else None
-    prev_rate = pct(prev_success, prev_total)
+    prev_rate = pct(prev_success, prev_terminal)
 
-    fresh_rows = load_pipeline_freshness(conn, pipeline_name=pipeline_name, pipeline_id=pipeline_id)
+    as_of = rng.get("to") if str(rng.get("preset") or "").lower() != "all" else None
+    fresh_rows = load_pipeline_freshness(
+        conn, pipeline_name=pipeline_name, pipeline_id=pipeline_id, as_of=as_of
+    )
     lags = [num(r.get("current_lag_hours")) for r in fresh_rows if r.get("current_lag_hours") is not None]
     avg_fresh = round(sum(lags) / len(lags), 2) if lags else None
 
@@ -117,6 +127,10 @@ def build_metrics_page(
         SELECT
           DATE_FORMAT(COALESCE(r.end_time, r.start_time), '%%Y-%%m-%%d %%H:00') AS bucket,
           SUM(CASE WHEN LOWER(COALESCE(status,'')) IN ('success','succeeded') THEN 1 ELSE 0 END) AS success_cnt,
+          SUM(
+            CASE WHEN LOWER(COALESCE(status,'')) IN
+              ('success','succeeded','failed','error','cancelled') THEN 1 ELSE 0 END
+          ) AS terminal_cnt,
           COUNT(*) AS total_cnt
         FROM obs_pipeline_runs r
         {where}
@@ -136,6 +150,10 @@ def build_metrics_page(
           MAX(r.tool_name) AS tool_name,
           COUNT(*) AS runs,
           SUM(CASE WHEN LOWER(COALESCE(status,'')) IN ('success','succeeded') THEN 1 ELSE 0 END) AS success_runs,
+          SUM(
+            CASE WHEN LOWER(COALESCE(status,'')) IN
+              ('success','succeeded','failed','error','cancelled') THEN 1 ELSE 0 END
+          ) AS terminal_runs,
           AVG(duration) AS avg_duration,
           MAX(COALESCE(end_time, start_time, created_at)) AS last_run_at,
           SUBSTRING_INDEX(
@@ -160,7 +178,8 @@ def build_metrics_page(
     for r in per:
         pid = r.get("pipeline_id")
         runs = num(r.get("runs"))
-        sr = pct(num(r.get("success_runs")), runs)
+        terminal_n = num(r.get("terminal_runs")) or runs
+        sr = pct(num(r.get("success_runs")), terminal_n)
         fr = fresh_map.get(pid) or {}
         st = str(r.get("latest_status") or "").lower()
         if pid in open_inc or st in {"failed", "error"}:
@@ -199,7 +218,9 @@ def build_metrics_page(
             title="Average Duration",
             value=avg_dur,
             display=format_duration(avg_dur) or "N/A",
-            delta=delta_pct(avg_dur, prev_avg) if avg_dur is not None else None,
+            delta=apply_delta(
+                delta_pct(avg_dur, prev_avg) if avg_dur is not None else None, rng
+            ),
             delta_label="vs previous period",
             available=avg_dur is not None,
         ),
@@ -208,7 +229,7 @@ def build_metrics_page(
             title="Runs",
             value=int(total),
             display=str(int(total)),
-            delta=delta_pct(total, prev_total),
+            delta=apply_delta(delta_pct(total, prev_total), rng),
             delta_label="vs previous period",
         ),
         make_kpi(
@@ -216,7 +237,7 @@ def build_metrics_page(
             title="Failed Runs",
             value=int(failed),
             display=str(int(failed)),
-            delta=delta_pct(failed, prev_failed),
+            delta=apply_delta(delta_pct(failed, prev_failed), rng),
             delta_label="vs previous period",
             tone="bad" if failed else "ok",
         ),
@@ -225,10 +246,11 @@ def build_metrics_page(
             title="Success Rate",
             value=success_rate,
             display=f"{success_rate}%" if success_rate is not None else "N/A",
-            delta=(
+            delta=apply_delta(
                 round(success_rate - prev_rate, 1)
                 if success_rate is not None and prev_rate is not None
-                else None
+                else None,
+                rng,
             ),
             delta_label="vs previous period",
             available=success_rate is not None,
@@ -270,7 +292,7 @@ def build_metrics_page(
             "success_rate_over_time": [
                 {
                     "timestamp": json_val(s.get("bucket")),
-                    "success_rate_pct": pct(num(s.get("success_cnt")), num(s.get("total_cnt"))),
+                    "success_rate_pct": pct(num(s.get("success_cnt")), num(s.get("terminal_cnt"))),
                 }
                 for s in success_series
             ],
@@ -280,7 +302,7 @@ def build_metrics_page(
                 "success": int(success),
                 "failed": int(failed),
                 "running": int(num(cur.get("running_runs"))),
-                "cancelled": int(max(0, total - success - failed - num(cur.get("running_runs")))),
+                "cancelled": int(max(0, terminal - success - failed)),
             },
             "top_by_duration": top_duration,
         },
@@ -290,6 +312,7 @@ def build_metrics_page(
         total=len(items),
         summary={
             "total_runs": int(total),
+            "terminal_runs": int(terminal),
             "success_runs": int(success),
             "failed_runs": int(failed),
             "success_rate_pct": success_rate,

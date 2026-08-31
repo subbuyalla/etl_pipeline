@@ -1,9 +1,0 @@
-{
-  "context": {
-    "input": {
-      "pipeline_id": "stock_etl",
-      "sla_hours": 24,
-      "lookback_runs": 10
-    }
-  }
-}

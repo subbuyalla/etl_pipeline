@@ -18,6 +18,13 @@ from application.src.services.observability.filters import (
 )
 from application.src.services.observability.freshness import load_pipeline_freshness
 from application.src.services.observability.incidents import list_derived_incidents
+from application.src.services.observability.quality import (
+    dataset_dq_map,
+    failed_test_count_by_pipeline,
+    normalize_dataset_id,
+)
+from application.src.services.observability.rca_context import _upstream_edges
+from application.src.services.observability.schema_diff import schema_health_score
 
 
 def _latest_run(conn, pipeline_id: str) -> dict:
@@ -32,6 +39,81 @@ def _latest_run(conn, pipeline_id: str) -> dict:
         (pipeline_id,),
     )
     return rows[0] if rows else {}
+
+
+def _lineage_edges_for_run(conn, run_id: Any) -> list[dict]:
+    if not run_id:
+        return []
+    rows = fetchall(
+        conn,
+        """
+        SELECT edge_id, pipeline_id, run_id, from_dataset, to_dataset,
+               edge_kind, confidence, observed_at
+        FROM obs_lineage_edges
+        WHERE run_id = %s
+        ORDER BY from_dataset, to_dataset
+        """,
+        (str(run_id),),
+    )
+    seen: set[tuple[str, str]] = set()
+    deduped: list[dict] = []
+    for e in rows:
+        key = (
+            str(e.get("from_dataset") or "").upper(),
+            str(e.get("to_dataset") or "").upper(),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(e)
+    return deduped
+
+
+def _merge_manifest_edges(
+    edges: list[dict],
+    nodes: list[dict],
+    seen_nodes: set[str],
+    manifest_edges: list[dict],
+    *,
+    pipe_node: str,
+) -> None:
+    """Add model-level nodes/links from obs_lineage_edges."""
+    for e in manifest_edges or []:
+        from_ds = str(e.get("from_dataset") or "")
+        to_ds = str(e.get("to_dataset") or "")
+        if not from_ds or not to_ds:
+            continue
+        from_id = f"model:{from_ds}"
+        to_id = f"model:{to_ds}"
+        if from_id not in seen_nodes:
+            seen_nodes.add(from_id)
+            nodes.append(
+                {
+                    "id": from_id,
+                    "type": "model",
+                    "label": from_ds,
+                    "metadata": {"edge_kind": e.get("edge_kind")},
+                }
+            )
+        if to_id not in seen_nodes:
+            seen_nodes.add(to_id)
+            nodes.append(
+                {
+                    "id": to_id,
+                    "type": "model",
+                    "label": to_ds,
+                    "metadata": {"edge_kind": e.get("edge_kind")},
+                }
+            )
+        edges.append(
+            {
+                "from": from_id,
+                "to": to_id,
+                "label": e.get("edge_kind") or "depends_on",
+            }
+        )
+        edges.append({"from": from_id, "to": pipe_node, "label": "feeds_pipeline"})
+        edges.append({"from": pipe_node, "to": to_id, "label": "produces"})
 
 
 def _assets_for_run(conn, run_id: Any) -> list[dict]:
@@ -106,6 +188,8 @@ def build_lineage_page(
 
     sources = set()
     healthy = degraded = failed = 0
+    pipe_ids = [str(p.get("pipeline_id")) for p in pipes]
+    dq_fail_map = failed_test_count_by_pipeline(conn, pipe_ids)
 
     for p in pipes:
         pid = str(p.get("pipeline_id"))
@@ -124,7 +208,10 @@ def build_lineage_page(
         )
 
         latest = _latest_run(conn, pid)
-        assets = _assets_for_run(conn, latest.get("id"))
+        run_id = latest.get("id")
+        assets = _assets_for_run(conn, run_id)
+        manifest_edges = _lineage_edges_for_run(conn, run_id)
+        _merge_manifest_edges(edges, nodes, seen_nodes, manifest_edges, pipe_node=pipe_node)
         src_assets = [a for a in assets if str(a.get("asset_role") or "").upper() == "SOURCE"]
         tgt_assets = [a for a in assets if str(a.get("asset_role") or "").upper() == "TARGET"]
 
@@ -148,7 +235,19 @@ def build_lineage_page(
         for a in tgt_assets:
             ds = a.get("dataset_id") or f"{a.get('database_name')}.{a.get('schema_name')}.{a.get('object_name')}"
             tid = f"target:{ds}"
-            add_node(tid, "target", str(ds), {"system": a.get("system_name"), "rows": a.get("row_count")})
+            ds_norm = normalize_dataset_id(ds)
+            dq_meta = dataset_dq_map(conn, pipeline_id=pid, dataset_ids=[ds_norm]).get(ds_norm) or {}
+            add_node(
+                tid,
+                "target",
+                str(ds),
+                {
+                    "system": a.get("system_name"),
+                    "rows": a.get("row_count"),
+                    "dq_status_key": dq_meta.get("status_key"),
+                    "quality_score": dq_meta.get("quality_score"),
+                },
+            )
             edges.append({"from": pipe_node, "to": tid, "label": "writes_to"})
 
         fr = fresh_map.get(pid) or {}
@@ -161,6 +260,28 @@ def build_lineage_page(
             failed += 1
 
         vol_rows = sum(num(a.get("row_count")) for a in tgt_assets)
+        dq_failed = dq_fail_map.get(pid, 0)
+        dq_display = f"{dq_failed} failed test(s)" if dq_failed else "OK"
+        target_ds_ids = [
+            normalize_dataset_id(
+                a.get("dataset_id")
+                or f"{a.get('database_name')}.{a.get('schema_name')}.{a.get('object_name')}"
+            )
+            for a in tgt_assets
+        ]
+        target_ds_ids = [d for d in target_ds_ids if d]
+        ds_dq = dataset_dq_map(conn, pipeline_id=pid, dataset_ids=target_ds_ids or None)
+        target_datasets = [
+            {
+                "dataset_id": ds,
+                "quality_score": info.get("quality_score"),
+                "status_key": info.get("status_key"),
+                "data_quality_display": info.get("data_quality_display"),
+                "failed": info.get("failed"),
+                "warn": info.get("warn"),
+            }
+            for ds, info in sorted(ds_dq.items())
+        ]
         items.append(
             {
                 "pipeline_id": pid,
@@ -176,8 +297,10 @@ def build_lineage_page(
                 "freshness": fr.get("status") or "N/A",
                 "freshness_lag_hours": fr.get("current_lag_hours"),
                 "target_rows": int(vol_rows),
-                "data_quality": None,
-                "data_quality_display": "N/A",
+                "data_quality": dq_failed,
+                "data_quality_display": dq_display,
+                "target_datasets": target_datasets,
+                "manifest_edges": len(manifest_edges),
             }
         )
 
@@ -242,9 +365,51 @@ def build_lineage_detail(conn, pipeline_id: str) -> dict[str, Any]:
     page = build_lineage_page(conn, pipeline_id=pipeline_id)
     item = next((i for i in page.get("items") or [] if i.get("pipeline_id") == pipeline_id), {})
     latest = _latest_run(conn, pipeline_id)
-    assets = _assets_for_run(conn, latest.get("id"))
+    rid = latest.get("id")
+    assets = _assets_for_run(conn, rid)
+    manifest_edges = _lineage_edges_for_run(conn, rid)
     fr = load_pipeline_freshness(conn, pipeline_id=pipeline_id)
     fr0 = fr[0] if fr else {}
+    dq_map = failed_test_count_by_pipeline(conn, [pipeline_id])
+    dq_failed = dq_map.get(pipeline_id, 0)
+    sch = schema_health_score(conn)
+    target_ds_ids = [
+        normalize_dataset_id(
+            a.get("dataset_id")
+            or f"{a.get('database_name')}.{a.get('schema_name')}.{a.get('object_name')}"
+        )
+        for a in assets
+        if str(a.get("asset_role") or "").upper() == "TARGET"
+    ]
+    target_ds_ids = [d for d in target_ds_ids if d]
+    ds_dq = dataset_dq_map(conn, pipeline_id=pipeline_id, dataset_ids=target_ds_ids or None)
+    dataset_quality = [
+        {
+            "dataset_id": ds,
+            "quality_score": info.get("quality_score"),
+            "status_key": info.get("status_key"),
+            "data_quality_display": info.get("data_quality_display"),
+            "failed": info.get("failed"),
+            "warn": info.get("warn"),
+            "passed": info.get("passed"),
+        }
+        for ds, info in sorted(ds_dq.items())
+    ]
+    relations: list[str] = []
+    try:
+        import json as _json
+
+        rel_raw = latest.get("relations_json")
+        if rel_raw:
+            relations = _json.loads(rel_raw) if isinstance(rel_raw, str) else list(rel_raw or [])
+    except (TypeError, ValueError, _json.JSONDecodeError):
+        relations = []
+    failed_node = latest.get("failed_node")
+    upstream = _upstream_edges(
+        manifest_edges,
+        failed_node=str(failed_node) if failed_node else None,
+        relations=relations,
+    )
 
     return {
         "ok": True,
@@ -272,7 +437,19 @@ def build_lineage_detail(conn, pipeline_id: str) -> dict[str, Any]:
                 {k: json_val(v) for k, v in a.items()} for a in assets
             ],
             "freshness": fr0,
-            "data_quality": {"available": False, "display": "N/A"},
-            "schema": {"status": "unknown", "display": "N/A", "available": False},
+            "data_quality": {
+                "available": True,
+                "display": f"{dq_failed} failed test(s)" if dq_failed else "OK",
+                "failed_tests": dq_failed,
+            },
+            "dataset_quality": dataset_quality,
+            "schema": {
+                "status": "good" if (sch.get("score") or 0) >= 90 else "warning",
+                "display": f"{sch.get('score')}%" if sch.get("available") else "N/A",
+                "available": bool(sch.get("available")),
+                "breaking_changes": sch.get("breaking"),
+            },
+            "manifest_edges": manifest_edges,
+            "upstream_slice": upstream,
         },
     }

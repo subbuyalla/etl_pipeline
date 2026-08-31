@@ -12,6 +12,10 @@ AssetRole = Literal["SOURCE", "TARGET"]
 _SYSTEM = {
     "snowflake": {"system_name": "Snowflake", "system_type": "DATA_WAREHOUSE"},
     "mysql": {"system_name": "MySQL", "system_type": "DATABASE"},
+    "postgres": {"system_name": "PostgreSQL", "system_type": "DATABASE"},
+    "postgresql": {"system_name": "PostgreSQL", "system_type": "DATABASE"},
+    "redshift": {"system_name": "Redshift", "system_type": "DATA_WAREHOUSE"},
+    "bigquery": {"system_name": "BigQuery", "system_type": "DATA_WAREHOUSE"},
 }
 
 
@@ -55,7 +59,7 @@ def map_dataset(
         "object_type": "TABLE",
         "row_count": raw.get("row_count"),
         "column_count": column_count,  # optional; add later from INFORMATION_SCHEMA.COLUMNS
-        "size_bytes": size_bytes,  # optional; not in MVP connector
+        "size_bytes": size_bytes if size_bytes is not None else raw.get("size_bytes"),
         "last_updated_at": raw.get("last_altered"),
         "observed_at": observed_at
         or datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),

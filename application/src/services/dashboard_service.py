@@ -8,7 +8,8 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
-from application.src.store.meta_mysql import ensure_grafana_views, get_connection
+from application.src.services.observability.quality import quality_summary
+from application.src.store.meta_mysql import ensure_grafana_views, ensure_tables, get_connection
 
 KPI_DEFS: list[dict[str, str]] = [
     {
@@ -241,6 +242,7 @@ def build_overview(range_key: str = "24h") -> dict[str, Any]:
     since = _since_sql(hours)
     conn = get_connection()
     try:
+        ensure_tables(conn)
         ensure_grafana_views(conn)
         with conn.cursor() as cur:
             pipelines = _fetchall(
@@ -410,6 +412,9 @@ def build_overview(range_key: str = "24h") -> dict[str, Any]:
         }
         schema_pct = _pct(len(pipelines_with_schema), pipeline_count) if pipeline_count else None
 
+        dq = quality_summary(conn)
+        dq_score = dq.get("quality_score")
+
         y_total = _num(yesterday.get("total_runs"))
         y_success = _num(yesterday.get("success_runs"))
         y_failed = _num(yesterday.get("failed_runs"))
@@ -517,9 +522,9 @@ def build_overview(range_key: str = "24h") -> dict[str, Any]:
             {
                 "id": "obs_quality",
                 "title": "Data Quality",
-                "value": None,
-                "display": "N/A",
-                "available": False,
+                "value": dq_score,
+                "display": f"{dq_score}%" if dq_score is not None else "N/A",
+                "available": bool(dq.get("available")),
             },
             {
                 "id": "obs_consistency",

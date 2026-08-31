@@ -1,8 +1,0 @@
-{
-  "context": {
-    "input": {
-      "pipeline_id": "stock_etl",
-      "limit": 5
-    }
-  }
-}

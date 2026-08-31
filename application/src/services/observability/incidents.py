@@ -7,6 +7,7 @@ from typing import Any, Optional
 from application.src.api.schemas import make_kpi
 from application.src.services.observability.filters import (
     age_label,
+    apply_delta,
     build_run_where,
     delta_pct,
     envelope,
@@ -220,7 +221,32 @@ def get_incident(conn, incident_id: str) -> dict | None:
     return None
 
 
-def incident_series(conn, from_str: str, to_str: str, *, pipeline_name=None, pipeline_id=None) -> dict:
+def incident_series(
+    conn,
+    from_str: str,
+    to_str: str,
+    *,
+    pipeline_name=None,
+    pipeline_id=None,
+    grain: str | None = None,
+    rng: dict | None = None,
+) -> dict:
+    """
+    Time series of *failed runs by severity* and success/fail run counts.
+
+    Not true open/resolved incident timelines (those are derived per-pipeline latest).
+    Keys failed_runs / success_runs are honest; open/resolved kept as aliases.
+    """
+    from application.src.services.observability.filters import (
+        chart_bucket_grain,
+        sql_time_bucket_expr,
+        zero_fill_series,
+    )
+
+    if grain is None and rng is not None:
+        grain = chart_bucket_grain(rng)
+    grain = grain or "day"
+    bucket_expr = sql_time_bucket_expr("r", grain)
     where, params = build_run_where(
         alias="r",
         pipeline_name=pipeline_name,
@@ -228,37 +254,73 @@ def incident_series(conn, from_str: str, to_str: str, *, pipeline_name=None, pip
         from_str=from_str,
         to_str=to_str,
     )
+    # Severity mirrors _severity(): compilation→critical, runtime/timeout→high, else medium
     rows = fetchall(
         conn,
         f"""
         SELECT
-          DATE(COALESCE(r.end_time, r.start_time, r.created_at)) AS day,
+          {bucket_expr} AS bucket,
           SUM(CASE WHEN LOWER(COALESCE(r.status,'')) IN ('failed','error')
-                    AND (LOWER(COALESCE(r.error_class,'')) = 'compilation'
-                         OR LOWER(COALESCE(r.error_message,'')) LIKE '%%compilation%%')
+                    AND (
+                      LOWER(COALESCE(r.error_class,'')) = 'compilation'
+                      OR LOWER(COALESCE(r.error_message,'')) LIKE '%%compilation%%'
+                      OR LOWER(COALESCE(r.error_message,'')) LIKE '%%invalid identifier%%'
+                    )
                THEN 1 ELSE 0 END) AS critical_cnt,
           SUM(CASE WHEN LOWER(COALESCE(r.status,'')) IN ('failed','error')
-                    AND NOT (LOWER(COALESCE(r.error_class,'')) = 'compilation'
-                             OR LOWER(COALESCE(r.error_message,'')) LIKE '%%compilation%%')
+                    AND NOT (
+                      LOWER(COALESCE(r.error_class,'')) = 'compilation'
+                      OR LOWER(COALESCE(r.error_message,'')) LIKE '%%compilation%%'
+                      OR LOWER(COALESCE(r.error_message,'')) LIKE '%%invalid identifier%%'
+                    )
+                    AND (
+                      LOWER(COALESCE(r.error_class,'')) = 'runtime'
+                      OR LOWER(COALESCE(r.error_message,'')) LIKE '%%timeout%%'
+                    )
                THEN 1 ELSE 0 END) AS high_cnt,
-          SUM(CASE WHEN LOWER(COALESCE(r.status,'')) IN ('failed','error') THEN 1 ELSE 0 END) AS open_proxy,
-          SUM(CASE WHEN LOWER(COALESCE(r.status,'')) IN ('success','succeeded') THEN 1 ELSE 0 END) AS resolved_proxy
+          SUM(CASE WHEN LOWER(COALESCE(r.status,'')) IN ('failed','error')
+                    AND NOT (
+                      LOWER(COALESCE(r.error_class,'')) = 'compilation'
+                      OR LOWER(COALESCE(r.error_message,'')) LIKE '%%compilation%%'
+                      OR LOWER(COALESCE(r.error_message,'')) LIKE '%%invalid identifier%%'
+                    )
+                    AND NOT (
+                      LOWER(COALESCE(r.error_class,'')) = 'runtime'
+                      OR LOWER(COALESCE(r.error_message,'')) LIKE '%%timeout%%'
+                    )
+               THEN 1 ELSE 0 END) AS medium_cnt,
+          SUM(CASE WHEN LOWER(COALESCE(r.status,'')) IN ('failed','error') THEN 1 ELSE 0 END) AS failed_cnt,
+          SUM(CASE WHEN LOWER(COALESCE(r.status,'')) IN ('success','succeeded') THEN 1 ELSE 0 END) AS success_cnt
         FROM obs_pipeline_runs r
         {where}
-        GROUP BY day
-        ORDER BY day ASC
+        GROUP BY bucket
+        ORDER BY bucket ASC
         """,
         params,
     )
-    labels = [json_val(r.get("day")) for r in rows]
-    return {
-        "labels": labels,
-        "open": [int(num(r.get("open_proxy"))) for r in rows],
-        "resolved": [int(num(r.get("resolved_proxy"))) for r in rows],
+    raw_labels = [json_val(r.get("bucket")) for r in rows]
+    series_map = {
         "critical": [int(num(r.get("critical_cnt"))) for r in rows],
         "high": [int(num(r.get("high_cnt"))) for r in rows],
-        "medium": [0 for _ in rows],
-        "low": [0 for _ in rows],
+        "medium": [int(num(r.get("medium_cnt"))) for r in rows],
+        "failed_runs": [int(num(r.get("failed_cnt"))) for r in rows],
+        "success_runs": [int(num(r.get("success_cnt"))) for r in rows],
+    }
+    if rng is not None:
+        labels, filled = zero_fill_series(raw_labels, series_map, rng, grain=grain)
+    else:
+        labels, filled = raw_labels, series_map
+    return {
+        "labels": labels,
+        "critical": filled["critical"],
+        "high": filled["high"],
+        "medium": filled["medium"],
+        "low": [0 for _ in labels],
+        "failed_runs": filled["failed_runs"],
+        "success_runs": filled["success_runs"],
+        # Back-compat aliases (honest rename preferred — see failed_runs/success_runs)
+        "open": filled["failed_runs"],
+        "resolved": filled["success_runs"],
     }
 
 
@@ -335,6 +397,7 @@ def build_incidents_page(
     series = incident_series(
         conn, rng["from_str"], rng["to_str"],
         pipeline_name=pipeline_name, pipeline_id=pipeline_id,
+        rng=rng,
     )
     by_sev = {
         "critical": critical_n,
@@ -349,7 +412,7 @@ def build_incidents_page(
             title="Open Incidents",
             value=open_n,
             display=str(open_n),
-            delta=delta_pct(float(open_n), float(prev_open)),
+            delta=apply_delta(delta_pct(float(open_n), float(prev_open)), rng),
             delta_label="vs previous period",
             tone="bad" if open_n else "ok",
         ),
@@ -365,7 +428,7 @@ def build_incidents_page(
             title="Critical",
             value=critical_n,
             display=str(critical_n),
-            delta=delta_pct(float(critical_n), float(prev_critical)),
+            delta=apply_delta(delta_pct(float(critical_n), float(prev_critical)), rng),
             delta_label="vs previous period",
             tone="bad" if critical_n else "ok",
         ),
@@ -374,7 +437,7 @@ def build_incidents_page(
             title="Resolved",
             value=resolved_n,
             display=str(resolved_n),
-            delta=delta_pct(float(resolved_n), float(prev_resolved)),
+            delta=apply_delta(delta_pct(float(resolved_n), float(prev_resolved)), rng),
             delta_label="vs previous period",
             tone="ok",
         ),
@@ -392,8 +455,13 @@ def build_incidents_page(
         series={
             "incidents_over_time": {
                 "labels": series["labels"],
-                "open": series["open"],
-                "resolved": series["resolved"],
+                "critical": series["critical"],
+                "high": series["high"],
+                "medium": series["medium"],
+                "failed_runs": series["failed_runs"],
+                "success_runs": series["success_runs"],
+                "open": series["failed_runs"],
+                "resolved": series["success_runs"],
             }
         },
         charts={
@@ -411,7 +479,8 @@ def build_incidents_page(
         meta={
             "formula": (
                 "Open incident = pipeline whose latest run failed (deduped by pipeline_id). "
-                "Resolved = failure in range then later success."
+                "Resolved = failure in range then later success. "
+                "Chart series failed_runs/success_runs are run-status counts (not incident timelines)."
             )
         },
     )

@@ -1,7 +1,0 @@
-{
-  "context": {
-    "input": {
-      "pipeline_id": "hr_etl"
-    }
-  }
-}

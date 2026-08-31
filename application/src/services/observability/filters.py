@@ -499,11 +499,110 @@ def build_filter_catalog(conn, q: Optional[str] = None) -> dict[str, Any]:
 
 
 def delta_pct(current: float | None, previous: float | None) -> float | None:
+    """Percent change. Returns null when previous is 0 (undefined), including both-zero."""
     if current is None or previous is None:
         return None
     if previous == 0:
-        return None if current == 0 else 100.0
+        return None
     return round(100.0 * (current - previous) / abs(previous), 1)
+
+
+def deltas_suppressed(rng: dict[str, Any] | None) -> bool:
+    """preset=all has no meaningful previous window — suppress all deltas."""
+    return bool(rng and str(rng.get("preset") or "").lower() == "all")
+
+
+def apply_delta(value: float | None, rng: dict[str, Any] | None) -> float | None:
+    if deltas_suppressed(rng):
+        return None
+    return value
+
+
+TERMINAL_STATUSES = ("success", "succeeded", "failed", "error", "cancelled")
+
+
+def chart_bucket_grain(rng: dict[str, Any]) -> str:
+    """≤24h → hourly buckets; longer windows → daily."""
+    try:
+        span = (rng["to"] - rng["from"]).total_seconds()
+    except Exception:
+        return "day"
+    if span <= 24 * 3600 + 60:
+        return "hour"
+    return "day"
+
+
+def iter_buckets(rng: dict[str, Any], grain: str | None = None) -> list[str]:
+    """Zero-fill friendly ordered bucket labels covering [from, to]."""
+    grain = grain or chart_bucket_grain(rng)
+    start = rng["from"]
+    end = rng["to"]
+    if grain == "hour":
+        cur = start.replace(minute=0, second=0, microsecond=0)
+        step = timedelta(hours=1)
+        fmt = "%Y-%m-%d %H:00:00"
+    else:
+        cur = start.replace(hour=0, minute=0, second=0, microsecond=0)
+        step = timedelta(days=1)
+        fmt = "%Y-%m-%d"
+    out: list[str] = []
+    # Cap to avoid runaway fill on preset=all
+    max_buckets = 24 * 14 if grain == "hour" else 400
+    while cur <= end and len(out) < max_buckets:
+        out.append(cur.strftime(fmt))
+        cur += step
+    return out
+
+
+def zero_fill_series(
+    labels: list[Any],
+    series_map: dict[str, list[Any]],
+    rng: dict[str, Any],
+    *,
+    grain: str | None = None,
+) -> tuple[list[str], dict[str, list[Any]]]:
+    """Align sparse day/hour series onto a continuous bucket axis with zeros."""
+    grain = grain or chart_bucket_grain(rng)
+    if str(rng.get("preset") or "").lower() == "all":
+        # Don't invent decades of empty buckets — keep observed labels only
+        filled_labels = [str(json_val(l) if not isinstance(l, str) else l) for l in labels]
+        # Normalize day labels
+        if grain == "day":
+            filled_labels = [str(l)[:10] for l in filled_labels]
+        return filled_labels, series_map
+
+    axis = iter_buckets(rng, grain)
+    index = {}
+    for i, lab in enumerate(labels):
+        key = str(json_val(lab) if not isinstance(lab, str) else lab)
+        if grain == "day":
+            key = key[:10]
+        elif grain == "hour" and len(key) >= 13:
+            # Normalize to YYYY-MM-DD HH:00:00
+            try:
+                dt = _as_naive_dt(key) or datetime.fromisoformat(key.replace(" ", "T")[:19])
+                key = dt.strftime("%Y-%m-%d %H:00:00")
+            except Exception:
+                pass
+        index[key] = i
+
+    filled: dict[str, list[Any]] = {k: [] for k in series_map}
+    for bucket in axis:
+        src_i = index.get(bucket)
+        for name, values in series_map.items():
+            if src_i is None:
+                filled[name].append(0 if values and isinstance(values[0], (int, float)) else 0.0)
+            else:
+                filled[name].append(values[src_i] if src_i < len(values) else 0)
+    return axis, filled
+
+
+def sql_time_bucket_expr(alias: str = "r", grain: str = "day") -> str:
+    """MySQL expression for chart grouping (escaped %% for pyformat)."""
+    ts = f"COALESCE({alias}.end_time, {alias}.start_time, {alias}.created_at)"
+    if grain == "hour":
+        return f"DATE_FORMAT({ts}, '%%Y-%%m-%%d %%H:00:00')"
+    return f"DATE({ts})"
 
 
 def envelope(

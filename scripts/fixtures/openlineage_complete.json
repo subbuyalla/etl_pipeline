@@ -1,0 +1,25 @@
+{
+  "eventType": "COMPLETE",
+  "eventTime": "2026-08-30T12:00:00Z",
+  "producer": "https://github.com/OpenLineage/OpenLineage/tree/1.0.0/integration/airflow",
+  "schemaURL": "https://openlineage.io/spec/1-0-5/OpenLineage.json",
+  "run": {
+    "runId": "ol-smoke-run-001"
+  },
+  "job": {
+    "namespace": "demo_etl",
+    "name": "load_fct_orders"
+  },
+  "inputs": [
+    {
+      "namespace": "snowflake://ACCOUNT",
+      "name": "ANALYTICS.RAW.STG_ORDERS"
+    }
+  ],
+  "outputs": [
+    {
+      "namespace": "snowflake://ACCOUNT",
+      "name": "ANALYTICS.MART.FCT_ORDERS"
+    }
+  ]
+}
