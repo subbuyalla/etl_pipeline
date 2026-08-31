@@ -1,0 +1,42 @@
+# Production EC2: API + poller only. MySQL lives on RDS (set DATABASE_URL in .env).
+#
+# Usage:
+#   docker compose -f docker-compose.prod.yml up -d --build
+#   docker compose -f docker-compose.prod.yml logs -f api
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      FREEMIUM_MAX_PIPELINES: "50"
+      RAW_RETENTION_DAYS: "30"
+    ports:
+      - "8002:8002"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  poller:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["python", "application/poller.py"]
+    env_file:
+      - .env
+    environment:
+      SYNC_INTERVAL_SECONDS: "300"
+      POLLER_RUN_EVALUATE: "1"
+      POLLER_RUN_ROLLUP: "1"
+      POLLER_RUN_PURGE: "1"
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_started

@@ -56,7 +56,7 @@ def map_dataset(
         "database_name": database_name,
         "schema_name": schema_name,
         "object_name": object_name,
-        "object_type": "TABLE",
+        "object_type": raw.get("object_type") or "TABLE",
         "row_count": raw.get("row_count"),
         "column_count": column_count,  # optional; add later from INFORMATION_SCHEMA.COLUMNS
         "size_bytes": size_bytes if size_bytes is not None else raw.get("size_bytes"),

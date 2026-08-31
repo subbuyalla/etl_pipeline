@@ -105,7 +105,8 @@ class SnowflakeConnector:
                 self.cursor.execute(f"USE DATABASE {self.database_id}")
 
             sql = """
-                SELECT TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ROW_COUNT, BYTES, LAST_ALTERED
+                SELECT TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ROW_COUNT, BYTES, LAST_ALTERED,
+                       TABLE_TYPE
                 FROM INFORMATION_SCHEMA.TABLES
                 WHERE TABLE_TYPE IN ('BASE TABLE', 'VIEW', 'MATERIALIZED VIEW')
             """
@@ -122,7 +123,8 @@ class SnowflakeConnector:
             self.cursor.execute(sql, params or None)
 
             rows: list[dict] = []
-            for catalog, schema, table, row_count, size_bytes, last_altered in self.cursor.fetchall():
+            for catalog, schema, table, row_count, size_bytes, last_altered, table_type in self.cursor.fetchall():
+                object_type = "VIEW" if table_type in ("VIEW", "MATERIALIZED VIEW") else "TABLE"
                 rows.append(
                     {
                         "database": catalog,
@@ -136,6 +138,8 @@ class SnowflakeConnector:
                             if hasattr(last_altered, "isoformat")
                             else last_altered
                         ),
+                        "table_type": table_type,
+                        "object_type": object_type,
                     }
                 )
             return rows
@@ -392,6 +396,8 @@ class SnowflakeConnector:
                         "row_count": row.get("row_count"),
                         "size_bytes": row.get("size_bytes"),
                         "last_altered": row.get("last_altered"),
+                        "object_type": row.get("object_type"),
+                        "table_type": row.get("table_type"),
                     },
                 }
             )
