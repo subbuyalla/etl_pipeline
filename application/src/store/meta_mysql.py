@@ -102,7 +102,19 @@ def ensure_tables(conn) -> None:
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """
         )
-        # Older DBs created before is_active existed
+        # Older DBs created before is_active or pipeline_id existed
+        try:
+            cur.execute(
+                "ALTER TABLE obs_pipelines CHANGE COLUMN id pipeline_id VARCHAR(64) NOT NULL"
+            )
+        except Exception:
+            pass
+        try:
+            cur.execute(
+                "ALTER TABLE obs_pipeline_bindings ADD COLUMN pipeline_id VARCHAR(64) NOT NULL AFTER binding_id"
+            )
+        except Exception:
+            pass
         try:
             cur.execute(
                 "ALTER TABLE obs_pipelines ADD COLUMN is_active TINYINT(1) NOT NULL DEFAULT 0"

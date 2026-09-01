@@ -286,10 +286,11 @@ def _default_unique_rule_target(conn, pipeline_id: str) -> tuple[str, str, str] 
         asset = fetchone(
             conn,
             """
-            SELECT database_name, schema_name, object_name
-            FROM obs_run_assets
-            WHERE pipeline_id = %s AND UPPER(COALESCE(asset_role, '')) = 'TARGET'
-            ORDER BY COALESCE(last_altered_at, created_at) DESC
+            SELECT a.database_name, a.schema_name, a.object_name
+            FROM obs_run_assets a
+            JOIN obs_pipeline_runs r ON r.id = a.run_id
+            WHERE r.pipeline_id = %s AND UPPER(COALESCE(a.asset_role, '')) = 'TARGET'
+            ORDER BY a.created_at DESC
             LIMIT 1
             """,
             (pipeline_id,),
@@ -306,12 +307,13 @@ def _default_unique_rule_target(conn, pipeline_id: str) -> tuple[str, str, str] 
     cols = fetchall(
         conn,
         """
-        SELECT column_name, ordinal_position
-        FROM obs_run_columns
-        WHERE pipeline_id = %s
-          AND UPPER(COALESCE(asset_role, '')) = 'TARGET'
-          AND UPPER(object_name) = UPPER(%s)
-        ORDER BY ordinal_position, column_name
+        SELECT c.column_name, c.ordinal_position
+        FROM obs_run_columns c
+        JOIN obs_pipeline_runs r ON r.id = c.run_id
+        WHERE r.pipeline_id = %s
+          AND UPPER(COALESCE(c.asset_role, '')) = 'TARGET'
+          AND UPPER(c.object_name) = UPPER(%s)
+        ORDER BY c.ordinal_position, c.column_name
         """,
         (pipeline_id, table),
     )
