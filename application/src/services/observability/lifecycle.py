@@ -288,9 +288,10 @@ def _default_unique_rule_target(conn, pipeline_id: str) -> tuple[str, str, str] 
             """
             SELECT a.database_name, a.schema_name, a.object_name
             FROM obs_run_assets a
-            JOIN obs_pipeline_runs r ON r.id = a.run_id
+            INNER JOIN obs_pipeline_runs r ON CAST(r.id AS CHAR) = a.run_id
             WHERE r.pipeline_id = %s AND UPPER(COALESCE(a.asset_role, '')) = 'TARGET'
-            ORDER BY a.created_at DESC
+            ORDER BY COALESCE(r.end_time, r.start_time, r.created_at) DESC,
+                     COALESCE(a.last_updated_at, a.observed_at, a.created_at) DESC
             LIMIT 1
             """,
             (pipeline_id,),
@@ -309,11 +310,12 @@ def _default_unique_rule_target(conn, pipeline_id: str) -> tuple[str, str, str] 
         """
         SELECT c.column_name, c.ordinal_position
         FROM obs_run_columns c
-        JOIN obs_pipeline_runs r ON r.id = c.run_id
+        INNER JOIN obs_pipeline_runs r ON CAST(r.id AS CHAR) = c.run_id
         WHERE r.pipeline_id = %s
           AND UPPER(COALESCE(c.asset_role, '')) = 'TARGET'
           AND UPPER(c.object_name) = UPPER(%s)
-        ORDER BY c.ordinal_position, c.column_name
+        ORDER BY COALESCE(r.end_time, r.start_time, r.created_at) DESC,
+                 c.ordinal_position, c.column_name
         """,
         (pipeline_id, table),
     )
