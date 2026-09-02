@@ -41,6 +41,7 @@ from application.src.services.observability.rca_deltas import (  # noqa: E402
     compute_volume_deltas,
 )
 from application.src.services.observability.lineage import build_lineage_detail  # noqa: E402
+from application.src.services.observability.volume import _is_pipeline_volume_healthy  # noqa: E402
 from application.src.store.meta_mysql import (  # noqa: E402
     delete_dq_rule,
     delete_monitor,
@@ -135,6 +136,25 @@ class TestOfflineHelpers(unittest.TestCase):
         self.assertEqual(rows[0]["row_count"], 208)
         self.assertEqual(rows[1]["row_count"], 100)
         self.assertIn("COUNT(*)", conn.cursor.last_sql)
+
+    def test_pipeline_volume_baseline_healthy(self):
+        cases = [
+            (5.0, 100, True, True, "normal stable"),
+            (-50.0, 50, True, False, "real drop"),
+            (None, 65, True, True, "baseline first run"),
+            (None, 0, True, False, "baseline zero rows"),
+            (None, 0, False, False, "missing current run"),
+        ]
+        for change, cur_records, had_current_run, expected, label in cases:
+            with self.subTest(label=label):
+                self.assertEqual(
+                    _is_pipeline_volume_healthy(
+                        change,
+                        cur_records=cur_records,
+                        had_current_run=had_current_run,
+                    ),
+                    expected,
+                )
 
     def test_manifest_to_edges(self):
         manifest = {

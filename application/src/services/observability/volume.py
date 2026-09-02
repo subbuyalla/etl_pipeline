@@ -160,6 +160,19 @@ def _volume_status(change_pct: float | None) -> str:
     return "healthy"
 
 
+def _is_pipeline_volume_healthy(
+    change: float | None,
+    *,
+    cur_records: float | None,
+    had_current_run: bool,
+) -> bool:
+    if _volume_status(change) == "healthy":
+        return True
+    if change is None and had_current_run and num(cur_records) > 0:
+        return True
+    return False
+
+
 def _fmt_bytes(n: float) -> str:
     if n >= 1024**4:
         return f"{n / (1024**4):.2f} TB"
@@ -233,7 +246,13 @@ def build_volume_page(
         pid = r.get("pipeline_id")
         prev_r = prev_per.get(pid) or {}
         change = apply_delta(delta_pct(num(r.get("records")), num(prev_r.get("records"))), rng)
-        status = _volume_status(change)
+        status_key = (
+            "healthy"
+            if _is_pipeline_volume_healthy(
+                change, cur_records=num(r.get("records")), had_current_run=True
+            )
+            else _volume_status(change)
+        )
         items.append(
             {
                 "pipeline_id": pid,
@@ -243,8 +262,8 @@ def build_volume_page(
                 "bytes": int(num(r.get("bytes"))),
                 "bytes_display": _fmt_bytes(num(r.get("bytes"))),
                 "pct_change": change,
-                "status": status.title(),
-                "status_key": status,
+                "status": status_key.title(),
+                "status_key": status_key,
                 "runs": int(num(r.get("runs"))),
                 "last_updated_at": json_val(r.get("last_run_at")),
                 "last_updated_age": age_label(r.get("last_run_at")),
@@ -379,7 +398,10 @@ def volume_health_score(conn, from_str: str, to_str: str, prev_from: str, prev_t
             change = -100.0 if num(prev_r.get("records")) > 0 else None
         else:
             change = delta_pct(num(cur_r.get("records")), num(prev_r.get("records")))
-        if _volume_status(change) == "healthy":
+        cur_records = num(cur_r.get("records")) if cur_r else None
+        if _is_pipeline_volume_healthy(
+            change, cur_records=cur_records, had_current_run=cur_r is not None
+        ):
             healthy += 1
     score = pct(healthy, len(all_pids))
     return {"score": score, "available": True, "healthy": healthy, "total": len(all_pids)}
