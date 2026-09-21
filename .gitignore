@@ -6,8 +6,14 @@ vgen/.env
 
 # Node / binaries
 node_modules/
+dist/
+datapulse/dist/
 vgen/vgen.exe
 *.exe
+
+# Scratch
+doc1_text.txt
+doc2_text.txt
 
 # Python
 __pycache__/

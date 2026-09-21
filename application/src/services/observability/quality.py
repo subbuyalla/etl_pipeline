@@ -36,17 +36,17 @@ def infer_dimension(*, message: Any = None, test_id: Any = None, monitor_kind: A
         return "timeliness"
     if kind == "volume_drop":
         return "completeness"
-    if kind in {"null_check", "null_pct"}:
+    if kind in {"null_check", "null_pct", "null_rate", "non_null_rate", "blank_count", "empty_string_count"}:
         return "completeness"
-    if kind in {"unique_check", "unique_violation", "duplicate_check", "duplicate_count"}:
+    if kind in {"unique_check", "unique_violation", "duplicate_check", "duplicate_count", "unique_rate", "distinct_count"}:
         return "uniqueness"
     if kind == "custom_sql":
         return "validity"
 
     text = f"{message or ''} {test_id or ''}".lower()
-    if "not_null" in text or "not null" in text:
+    if "not_null" in text or "not null" in text or "null_rate" in text or "blank" in text or "empty" in text:
         return "completeness"
-    if "unique" in text:
+    if "unique" in text or "distinct" in text:
         return "uniqueness"
     if "relationship" in text:
         return "accuracy"
@@ -746,6 +746,13 @@ def build_quality_page(
                 "expected_value": obs.get("expected_value"),
                 "actual_value": obs.get("actual_value"),
                 "failure_count": obs.get("failure_count"),
+                "total_rows": obs.get("total_rows"),
+                "null_count": obs.get("null_count"),
+                "null_rate": obs.get("null_rate"),
+                "distinct_count": obs.get("distinct_count"),
+                "unique_rate": obs.get("unique_rate"),
+                "blank_count": obs.get("blank_count"),
+                "non_null_rate": obs.get("non_null_rate"),
             }
         )
 

@@ -29,52 +29,147 @@ def _parse_dt(value: Any) -> datetime | None:
         return None
 
 
-def get_connection():
-    """Connect to Metadata MySQL.
+import queue
+import threading
 
-    Prefers DATABASE_URL when set (e.g. mysql+pymysql://user:pass@host:3306/db).
-    Falls back to DB_HOST / DB_USER / DB_PASSWORD / DB_NAME / DB_PORT.
+
+class PooledConnection:
+    """Proxy object around a raw PyMySQL connection returned by the pool.
+
+    When close() is called, returns the raw connection to the pool instead of
+    terminating the underlying TCP/SSL socket.
     """
-    from urllib.parse import unquote, urlparse
 
-    database_url = (os.getenv("DATABASE_URL") or "").strip()
-    if database_url:
-        # Accept SQLAlchemy-style scheme used in .env
-        normalized = database_url.replace("mysql+pymysql://", "mysql://", 1)
-        parsed = urlparse(normalized)
-        host = parsed.hostname or ""
-        port = int(parsed.port or 3306)
-        user = unquote(parsed.username or "")
-        password = unquote(parsed.password or "")
-        database = (parsed.path or "/").lstrip("/") or "metadata"
-        if not host or not user or not password:
-            raise RuntimeError("DATABASE_URL must include host, user, and password")
-    else:
-        host = (os.getenv("DB_HOST") or "").strip()
-        if not host:
-            raise RuntimeError(
-                "Missing DATABASE_URL or DB_HOST. Set DATABASE_URL or "
-                "DB_HOST=127.0.0.1 (local) / production host for cutover."
-            )
-        user = os.getenv("DB_USER") or "root"
-        password = os.getenv("MYSQL_PASSWORD") or os.getenv("DB_PASSWORD") or ""
-        database = os.getenv("DB_NAME") or "metadata"
-        port = int(os.getenv("DB_PORT") or "3306")
-        if not password:
-            raise RuntimeError("Missing DB_PASSWORD / MYSQL_PASSWORD for Metadata MySQL")
-    return pymysql.connect(
-        host=host,
-        port=port,
-        user=user,
-        password=password,
-        database=database,
-        charset="utf8mb4",
-        autocommit=False,
-        cursorclass=pymysql.cursors.DictCursor,
-    )
+    def __init__(self, raw_conn: pymysql.Connection, pool: "MySQLConnectionPool"):
+        self._raw_conn = raw_conn
+        self._pool = pool
+
+    def close(self):
+        pool = self._pool
+        raw_conn = self._raw_conn
+        self._pool = None
+        self._raw_conn = None
+        if pool is not None and raw_conn is not None:
+            pool.release(raw_conn)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+    def __getattr__(self, name: str) -> Any:
+        if self._raw_conn is None:
+            raise RuntimeError("Cannot use connection: connection is already closed")
+        return getattr(self._raw_conn, name)
+
+
+class MySQLConnectionPool:
+    def __init__(self, max_size: int = 20):
+        self.max_size = max_size
+        self._queue: queue.Queue = queue.Queue(maxsize=max_size)
+        self._lock = threading.Lock()
+        self._created_count = 0
+
+    def _get_connect_params(self) -> dict:
+        from urllib.parse import unquote, urlparse
+
+        database_url = (os.getenv("DATABASE_URL") or "").strip()
+        if database_url:
+            normalized = database_url.replace("mysql+pymysql://", "mysql://", 1)
+            parsed = urlparse(normalized)
+            host = parsed.hostname or ""
+            port = int(parsed.port or 3306)
+            user = unquote(parsed.username or "")
+            password = unquote(parsed.password or "")
+            database = (parsed.path or "/").lstrip("/") or "metadata"
+            if not host or not user or not password:
+                raise RuntimeError("DATABASE_URL must include host, user, and password")
+        else:
+            host = (os.getenv("DB_HOST") or "").strip()
+            if not host:
+                raise RuntimeError(
+                    "Missing DATABASE_URL or DB_HOST. Set DATABASE_URL or "
+                    "DB_HOST=127.0.0.1 (local) / production host for cutover."
+                )
+            user = os.getenv("DB_USER") or "root"
+            password = os.getenv("MYSQL_PASSWORD") or os.getenv("DB_PASSWORD") or ""
+            database = os.getenv("DB_NAME") or "metadata"
+            port = int(os.getenv("DB_PORT") or "3306")
+            if not password:
+                raise RuntimeError("Missing DB_PASSWORD / MYSQL_PASSWORD for Metadata MySQL")
+        return dict(
+            host=host,
+            port=port,
+            user=user,
+            password=password,
+            database=database,
+            charset="utf8mb4",
+            autocommit=False,
+            cursorclass=pymysql.cursors.DictCursor,
+            connect_timeout=10,
+        )
+
+    def _new_raw_conn(self) -> pymysql.Connection:
+        params = self._get_connect_params()
+        return pymysql.connect(**params)
+
+    def acquire(self) -> PooledConnection:
+        while True:
+            try:
+                raw_conn = self._queue.get_nowait()
+                try:
+                    raw_conn.ping(reconnect=True)
+                    return PooledConnection(raw_conn, self)
+                except Exception:
+                    try:
+                        raw_conn.close()
+                    except Exception:
+                        pass
+                    with self._lock:
+                        self._created_count = max(0, self._created_count - 1)
+                    continue
+            except queue.Empty:
+                break
+
+        raw_conn = self._new_raw_conn()
+        with self._lock:
+            self._created_count += 1
+        return PooledConnection(raw_conn, self)
+
+    def release(self, raw_conn: pymysql.Connection):
+        try:
+            raw_conn.rollback()
+        except Exception:
+            pass
+        try:
+            self._queue.put_nowait(raw_conn)
+        except queue.Full:
+            try:
+                raw_conn.close()
+            except Exception:
+                pass
+            with self._lock:
+                self._created_count = max(0, self._created_count - 1)
+
+
+_DB_POOL = MySQLConnectionPool(max_size=20)
+
+
+def get_connection():
+    """Connect to Metadata MySQL using warm connection pool."""
+    return _DB_POOL.acquire()
+
+
+# Guard: run the full DDL migration block only ONCE per process lifetime.
+# This prevents 30+ ALTER TABLE roundtrips on every incoming API request.
+_TABLES_ENSURED: bool = False
 
 
 def ensure_tables(conn) -> None:
+    global _TABLES_ENSURED
+    if _TABLES_ENSURED:
+        return
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -598,6 +693,109 @@ def ensure_tables(conn) -> None:
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """
         )
+        # ── NEW: Canonical asset registry (asset-centric, not run-centric) ──
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS obs_assets (
+              asset_id VARCHAR(64) NOT NULL,
+              tenant_id VARCHAR(128) NOT NULL DEFAULT 'default',
+              dataset_id VARCHAR(512) NOT NULL,
+              asset_type VARCHAR(64) NULL,
+              system_type VARCHAR(64) NULL,
+              system_name VARCHAR(128) NULL,
+              database_name VARCHAR(255) NULL,
+              schema_name VARCHAR(255) NULL,
+              object_name VARCHAR(255) NOT NULL,
+              environment VARCHAR(64) NULL,
+              owner VARCHAR(255) NULL,
+              description TEXT NULL,
+              is_active TINYINT(1) NOT NULL DEFAULT 1,
+              last_seen_at DATETIME NULL,
+              last_row_count BIGINT NULL,
+              last_size_bytes BIGINT NULL,
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                ON UPDATE CURRENT_TIMESTAMP,
+              PRIMARY KEY (asset_id),
+              UNIQUE KEY uq_obs_asset_did (tenant_id, dataset_id(255)),
+              KEY ix_obs_asset_tenant (tenant_id),
+              KEY ix_obs_asset_obj (database_name, schema_name, object_name)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
+        )
+        # ── NEW: Raw metric observations (time-series for anomaly baseline) ──
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS obs_metric_observations (
+              metric_id BIGINT NOT NULL AUTO_INCREMENT,
+              tenant_id VARCHAR(128) NOT NULL DEFAULT 'default',
+              asset_id VARCHAR(64) NULL,
+              dataset_id VARCHAR(512) NULL,
+              pipeline_id VARCHAR(64) NULL,
+              run_id VARCHAR(64) NULL,
+              metric_name VARCHAR(128) NOT NULL,
+              metric_value DOUBLE NOT NULL,
+              unit VARCHAR(32) NULL,
+              dimensions_json LONGTEXT NULL,
+              observed_at DATETIME NOT NULL,
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              PRIMARY KEY (metric_id),
+              KEY ix_obs_metric_asset (asset_id, metric_name, observed_at),
+              KEY ix_obs_metric_tenant (tenant_id, metric_name, observed_at),
+              KEY ix_obs_metric_run (run_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
+        )
+        # ── MIGRATE: Add new fields to obs_alerts (decouple from pipeline) ──
+        for _col_sql in (
+            "ALTER TABLE obs_alerts ADD COLUMN tenant_id VARCHAR(128) NULL AFTER alert_id",
+            "ALTER TABLE obs_alerts ADD COLUMN asset_id VARCHAR(64) NULL",
+            "ALTER TABLE obs_alerts ADD COLUMN event_id VARCHAR(64) NULL",
+            "ALTER TABLE obs_alerts ADD COLUMN fingerprint VARCHAR(64) NULL",
+            "ALTER TABLE obs_alerts ADD COLUMN correlation_key VARCHAR(128) NULL",
+            "ALTER TABLE obs_alerts ADD COLUMN acknowledged_at DATETIME NULL",
+            "ALTER TABLE obs_alerts ADD COLUMN acknowledged_by VARCHAR(255) NULL",
+            "ALTER TABLE obs_alerts ADD COLUMN suppressed_at DATETIME NULL",
+            "ALTER TABLE obs_alerts ADD COLUMN suppressed_by VARCHAR(255) NULL",
+            "ALTER TABLE obs_alerts ADD COLUMN resolved_by VARCHAR(255) NULL",
+            "ALTER TABLE obs_alerts ADD COLUMN check_id VARCHAR(64) NULL",
+            "CREATE INDEX ix_obs_alert_fp ON obs_alerts (fingerprint)",
+            "CREATE INDEX ix_obs_alert_corr ON obs_alerts (correlation_key)",
+        ):
+            try:
+                cur.execute(_col_sql)
+            except Exception:
+                pass
+        # ── MIGRATE: Upgrade obs_incidents to asset-centric model ──
+        for _col_sql in (
+            "ALTER TABLE obs_incidents ADD COLUMN tenant_id VARCHAR(128) NULL AFTER incident_id",
+            "ALTER TABLE obs_incidents ADD COLUMN root_asset_id VARCHAR(64) NULL",
+            "ALTER TABLE obs_incidents ADD COLUMN root_asset_type VARCHAR(64) NULL",
+            "ALTER TABLE obs_incidents ADD COLUMN root_event_id VARCHAR(64) NULL",
+            "ALTER TABLE obs_incidents ADD COLUMN priority VARCHAR(32) NULL",
+            "ALTER TABLE obs_incidents ADD COLUMN owner VARCHAR(255) NULL",
+            "ALTER TABLE obs_incidents ADD COLUMN correlation_key VARCHAR(128) NULL",
+            "ALTER TABLE obs_incidents ADD COLUMN blast_radius_count INT NULL DEFAULT 0",
+            "ALTER TABLE obs_incidents ADD COLUMN acknowledged_at DATETIME NULL",
+            "ALTER TABLE obs_incidents ADD COLUMN acknowledged_by VARCHAR(255) NULL",
+            "ALTER TABLE obs_incidents ADD COLUMN triage_started_at DATETIME NULL",
+            "ALTER TABLE obs_incidents ADD COLUMN resolved_by VARCHAR(255) NULL",
+            "ALTER TABLE obs_incidents ADD COLUMN root_cause TEXT NULL",
+            "ALTER TABLE obs_incidents ADD COLUMN resolution TEXT NULL",
+            "CREATE INDEX ix_obs_inc_corr ON obs_incidents (correlation_key)",
+            "CREATE INDEX ix_obs_inc_asset ON obs_incidents (root_asset_id)",
+        ):
+            try:
+                cur.execute(_col_sql)
+            except Exception:
+                pass
+        # ── Add expires_at to obs_tool_snapshots (recommended by docs) ──
+        try:
+            cur.execute(
+                "ALTER TABLE obs_tool_snapshots ADD COLUMN expires_at DATETIME NULL"
+            )
+        except Exception:
+            pass
         backfill_rows_added(conn)
         try:
             cur.execute(
@@ -610,6 +808,7 @@ def ensure_tables(conn) -> None:
         except Exception:
             pass
     conn.commit()
+    _TABLES_ENSURED = True
 
 
 def ensure_grafana_views(conn) -> None:
@@ -905,18 +1104,27 @@ def get_active_pipeline() -> dict | None:
         conn.close()
 
 
-def list_pipelines() -> list[dict]:
+def list_pipelines(search: str | None = None) -> list[dict]:
     conn = get_connection()
     try:
         ensure_tables(conn)
+        clauses = []
+        params: list[Any] = []
+        if search and search.strip():
+            s = f"%{search.strip()}%"
+            clauses.append("(pipeline_name LIKE %s OR source_tool LIKE %s OR etl_tool LIKE %s OR target_tool LIKE %s OR pipeline_id LIKE %s)")
+            params.extend([s, s, s, s, s])
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         with conn.cursor() as cur:
             cur.execute(
-                """
+                f"""
                 SELECT pipeline_id, pipeline_name, source_tool, source_schema,
                        etl_tool, target_tool, target_schema, is_active, updated_at
                 FROM obs_pipelines
+                {where}
                 ORDER BY is_active DESC, updated_at DESC
-                """
+                """,
+                params,
             )
             return list(cur.fetchall() or [])
     finally:
@@ -1342,10 +1550,16 @@ ALLOWED_MONITOR_KINDS = frozenset(
         "dbt_test_failure",
         "null_check",
         "null_pct",
+        "null_rate",
         "unique_check",
         "unique_violation",
+        "unique_rate",
         "duplicate_check",
         "duplicate_count",
+        "non_null_rate",
+        "blank_count",
+        "empty_string_count",
+        "distinct_count",
         "custom_sql",
     }
 )
@@ -1357,10 +1571,16 @@ _MONITOR_TYPE_BY_KIND = {
     "dbt_test_failure": "validation",
     "null_check": "validation",
     "null_pct": "validation",
+    "null_rate": "validation",
     "unique_check": "validation",
     "unique_violation": "validation",
+    "unique_rate": "validation",
     "duplicate_check": "validation",
     "duplicate_count": "validation",
+    "non_null_rate": "validation",
+    "blank_count": "validation",
+    "empty_string_count": "validation",
+    "distinct_count": "validation",
     "custom_sql": "custom_sql",
 }
 
@@ -1531,6 +1751,12 @@ ALLOWED_DQ_RULE_TYPES = frozenset(
         "NOT_NULL",
         "UNIQUE",
         "DUPLICATE",
+        "NULL_RATE",
+        "UNIQUE_RATE",
+        "NON_NULL_RATE",
+        "BLANK_COUNT",
+        "EMPTY_STRING_COUNT",
+        "DISTINCT_COUNT",
         "ACCEPTED_VALUES",
         "RANGE",
         "CUSTOM_SQL",
@@ -1541,6 +1767,12 @@ _RULE_TYPE_TO_CHECK_KIND = {
     "NOT_NULL": "null_check",
     "UNIQUE": "unique_check",
     "DUPLICATE": "duplicate_check",
+    "NULL_RATE": "null_rate",
+    "UNIQUE_RATE": "unique_rate",
+    "NON_NULL_RATE": "non_null_rate",
+    "BLANK_COUNT": "blank_count",
+    "EMPTY_STRING_COUNT": "blank_count",
+    "DISTINCT_COUNT": "distinct_count",
     "CUSTOM_SQL": "custom_sql",
     "ACCEPTED_VALUES": "custom_sql",
     "RANGE": "custom_sql",
@@ -1746,6 +1978,48 @@ def store_asset(conn, row: dict) -> None:
                 dataset_id,
             ),
         )
+    # Silently upsert into canonical obs_assets registry (fire-and-forget)
+    try:
+        import uuid as _uuid
+        _tid = str(row.get("tenant_id") or "default")
+        _did = str(dataset_id or "")[:512]
+        if _did:
+            _asset_id = str(_uuid.uuid5(_uuid.NAMESPACE_URL, f"{_tid}:{_did}"))
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO obs_assets (
+                      asset_id, tenant_id, dataset_id,
+                      system_type, system_name,
+                      database_name, schema_name, object_name,
+                      is_active, last_seen_at, last_row_count, last_size_bytes
+                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,1,UTC_TIMESTAMP(),%s,%s)
+                    ON DUPLICATE KEY UPDATE
+                      system_type=VALUES(system_type),
+                      system_name=VALUES(system_name),
+                      database_name=VALUES(database_name),
+                      schema_name=VALUES(schema_name),
+                      object_name=VALUES(object_name),
+                      is_active=1,
+                      last_seen_at=UTC_TIMESTAMP(),
+                      last_row_count=VALUES(last_row_count),
+                      last_size_bytes=VALUES(last_size_bytes)
+                    """,
+                    (
+                        _asset_id,
+                        _tid,
+                        _did,
+                        row.get("system_type"),
+                        row.get("system_name"),
+                        row.get("database_name"),
+                        row.get("schema_name"),
+                        row.get("object_name") or _did.split(".")[-1],
+                        row.get("row_count"),
+                        row.get("size_bytes"),
+                    ),
+                )
+    except Exception:
+        pass  # never block run storage for catalog side-effects
 
 
 def store_columns(conn, run_id: str, columns: list[dict]) -> int:
@@ -2738,6 +3012,7 @@ def list_tools(
     *,
     kind: str | None = None,
     connector_type: str | None = None,
+    search: str | None = None,
 ) -> list[dict]:
     conn = get_connection()
     try:
@@ -2750,6 +3025,10 @@ def list_tools(
         if connector_type:
             clauses.append("i.connector_type = %s")
             params.append(connector_type.strip().lower())
+        if search and search.strip():
+            s = f"%{search.strip()}%"
+            clauses.append("(i.name LIKE %s OR i.connector_type LIKE %s OR i.instance_id LIKE %s)")
+            params.extend([s, s, s])
         where = " AND ".join(clauses)
         with conn.cursor() as cur:
             cur.execute(
@@ -3002,12 +3281,25 @@ def get_fresh_tool_snapshots(
     *,
     asset_role: str = "SOURCE",
     ttl_seconds: int | None = None,
+    dataset_ids: list[str] | None = None,
 ) -> list[dict] | None:
     """
-    Return list of snapshot payloads for a DB tool if all rows are within TTL.
-    None means caller should pull fresh.
+    Return cached snapshot payloads for a DB tool if all rows are within TTL.
+    None means caller should pull fresh from the source system.
+
+    Args:
+        instance_id: Connector instance ID.
+        asset_role: 'SOURCE' or 'TARGET'.
+        ttl_seconds: Override the default TTL from env.
+        dataset_ids: If provided, only return snapshots whose dataset_id
+            (uppercased) is in this set. Prevents cross-pipeline cache
+            contamination when one Snowflake instance serves multiple pipelines.
     """
     ttl = ttl_seconds if ttl_seconds is not None else tool_snapshot_ttl_seconds()
+    # Normalise the filter to uppercase for case-insensitive matching
+    filter_set: set[str] | None = (
+        {d.upper() for d in dataset_ids if d} if dataset_ids else None
+    )
     conn = get_connection()
     try:
         ensure_tables(conn)
@@ -3026,6 +3318,11 @@ def get_fresh_tool_snapshots(
         now = datetime.utcnow()
         out = []
         for row in rows:
+            # Apply dataset_ids filter if provided
+            if filter_set is not None:
+                row_did = (row.get("dataset_id") or "").upper()
+                if row_did not in filter_set:
+                    continue
             pulled = row.get("pulled_at")
             if not pulled:
                 return None
@@ -3056,7 +3353,10 @@ def get_fresh_tool_snapshots(
                     "reused": True,
                 }
             )
-        return out
+        # If filter was applied and no rows matched, return None (pull fresh)
+        if filter_set is not None and not out:
+            return None
+        return out if out else None
     finally:
         conn.close()
 
@@ -3124,5 +3424,177 @@ def upsert_tool_snapshots(
     except Exception:
         conn.rollback()
         raise
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Canonical Asset Registry
+# ---------------------------------------------------------------------------
+
+def upsert_canonical_asset(asset_row: dict, *, tenant_id: str = "default") -> str:
+    """
+    Upsert a row into obs_assets (the persistent canonical asset registry).
+
+    Call this whenever a run discovers an asset so the platform maintains
+    a live catalog of known assets independent of pipeline run history.
+
+    Returns the asset_id.
+    """
+    import uuid as _uuid
+
+    dataset_id = str(asset_row.get("dataset_id") or "")[:512]
+    if not dataset_id:
+        return ""
+    asset_id = str(_uuid.uuid5(_uuid.NAMESPACE_URL, f"{tenant_id}:{dataset_id}"))
+    conn = get_connection()
+    try:
+        ensure_tables(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO obs_assets (
+                  asset_id, tenant_id, dataset_id,
+                  system_type, system_name,
+                  database_name, schema_name, object_name,
+                  is_active, last_seen_at, last_row_count, last_size_bytes
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,1,UTC_TIMESTAMP(),%s,%s)
+                ON DUPLICATE KEY UPDATE
+                  system_type=VALUES(system_type),
+                  system_name=VALUES(system_name),
+                  database_name=VALUES(database_name),
+                  schema_name=VALUES(schema_name),
+                  object_name=VALUES(object_name),
+                  is_active=1,
+                  last_seen_at=UTC_TIMESTAMP(),
+                  last_row_count=VALUES(last_row_count),
+                  last_size_bytes=VALUES(last_size_bytes)
+                """,
+                (
+                    asset_id,
+                    tenant_id,
+                    dataset_id,
+                    asset_row.get("system_type"),
+                    asset_row.get("system_name"),
+                    asset_row.get("database_name"),
+                    asset_row.get("schema_name"),
+                    asset_row.get("object_name") or dataset_id.split(".")[-1],
+                    asset_row.get("row_count"),
+                    asset_row.get("size_bytes"),
+                ),
+            )
+        conn.commit()
+        return asset_id
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Metric Observations (time-series raw metrics for anomaly baseline)
+# ---------------------------------------------------------------------------
+
+def record_metric_observation(
+    *,
+    tenant_id: str = "default",
+    dataset_id: str | None = None,
+    asset_id: str | None = None,
+    pipeline_id: str | None = None,
+    run_id: str | None = None,
+    metric_name: str,
+    metric_value: float,
+    unit: str | None = None,
+    dimensions: dict | None = None,
+    observed_at: datetime | None = None,
+) -> int:
+    """
+    Insert a raw metric observation into obs_metric_observations.
+
+    Examples:
+        record_metric_observation(dataset_id="orders", metric_name="row_count",
+                                  metric_value=1_204_532, run_id=run_id)
+        record_metric_observation(dataset_id="orders", metric_name="null_rate",
+                                  metric_value=0.03, unit="ratio")
+
+    Returns the auto-increment metric_id.
+    """
+    conn = get_connection()
+    try:
+        ensure_tables(conn)
+        now_ts = observed_at or datetime.utcnow()
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO obs_metric_observations (
+                  tenant_id, asset_id, dataset_id, pipeline_id, run_id,
+                  metric_name, metric_value, unit, dimensions_json, observed_at
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                """,
+                (
+                    tenant_id,
+                    asset_id,
+                    dataset_id[:512] if dataset_id else None,
+                    pipeline_id,
+                    run_id,
+                    metric_name,
+                    float(metric_value),
+                    unit,
+                    json.dumps(dimensions, default=str) if dimensions else None,
+                    now_ts,
+                ),
+            )
+            new_id = cur.lastrowid or 0
+        conn.commit()
+        return int(new_id)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def get_metric_baseline(
+    *,
+    tenant_id: str = "default",
+    dataset_id: str,
+    metric_name: str,
+    lookback_days: int = 14,
+) -> dict:
+    """
+    Compute a rolling baseline for anomaly detection.
+
+    Returns: {mean, stddev, min, max, p25, p75, sample_count}
+    """
+    conn = get_connection()
+    try:
+        ensure_tables(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  COUNT(*)      AS sample_count,
+                  AVG(metric_value)  AS mean,
+                  STDDEV(metric_value) AS stddev,
+                  MIN(metric_value)  AS min,
+                  MAX(metric_value)  AS max
+                FROM obs_metric_observations
+                WHERE tenant_id = %s
+                  AND dataset_id = %s
+                  AND metric_name = %s
+                  AND observed_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL %s DAY)
+                """,
+                (tenant_id, dataset_id, metric_name, lookback_days),
+            )
+            row = cur.fetchone() or {}
+        return {
+            "mean": float(row.get("mean") or 0),
+            "stddev": float(row.get("stddev") or 0),
+            "min": float(row.get("min") or 0),
+            "max": float(row.get("max") or 0),
+            "sample_count": int(row.get("sample_count") or 0),
+            "lookback_days": lookback_days,
+        }
     finally:
         conn.close()

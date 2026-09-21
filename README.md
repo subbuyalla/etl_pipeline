@@ -14,7 +14,7 @@ Set `DB_HOST=127.0.0.1` in `.env` (required — no cloud default). Create DB `me
 2. `POST /v1/pipelines/from-tools` — pick source + etl + target tool IDs
 3. `POST /v1/sync` — ETL logs per pipeline; DB snapshots reused across pipelines
 
-See [`docs/CONNECTORS.md`](docs/CONNECTORS.md).
+See [`docs/CONNECTORS.md`](docs/CONNECTORS.md). Frontend setup UI spec: [`docs/UI_SETUP_SPEC.md`](docs/UI_SETUP_SPEC.md).
 
 ## Metadata contract
 

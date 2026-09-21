@@ -71,10 +71,16 @@ def main() -> None:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT instance_id, name, connector_type, auth_ref, connection_id
-                FROM obs_connector_instances
-                WHERE connector_type IN ('dbt', 'dbt_cloud')
-                ORDER BY updated_at DESC
+                SELECT
+                    i.instance_id,
+                    i.name,
+                    i.connector_type,
+                    i.connection_id,
+                    c.auth_ref
+                FROM obs_connector_instances i
+                LEFT JOIN obs_connections c ON c.connection_id = i.connection_id
+                WHERE i.connector_type IN ('dbt', 'dbt_cloud')
+                ORDER BY i.updated_at DESC
                 LIMIT 10
                 """
             )

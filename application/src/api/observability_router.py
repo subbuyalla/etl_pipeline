@@ -149,6 +149,23 @@ def api_v1_health() -> dict[str, Any]:
         conn.close()
 
 
+import time
+
+_CACHE_STORE: dict[str, tuple[float, Any]] = {}
+
+
+def _get_cached(key: str, ttl_seconds: float) -> Any | None:
+    now = time.time()
+    hit = _CACHE_STORE.get(key)
+    if hit and (now - hit[0]) < ttl_seconds:
+        return hit[1]
+    return None
+
+
+def _set_cached(key: str, val: Any) -> None:
+    _CACHE_STORE[key] = (time.time(), val)
+
+
 # =============================================================================
 # Filter lookups (status/tool/presets; pipelines live under /pipelines/catalog)
 # =============================================================================
@@ -157,9 +174,16 @@ def api_v1_health() -> dict[str, Any]:
 def filter_catalog(
     q: Optional[str] = Query(None, description="Optional search on pipeline id or name"),
 ) -> dict[str, Any]:
+    q_str = q if isinstance(q, str) else None
+    cache_key = f"filters:{q_str or ''}"
+    hit = _get_cached(cache_key, 30.0)
+    if hit is not None:
+        return hit
     conn = _conn()
     try:
-        return build_filter_catalog(conn, q=q)
+        res = build_filter_catalog(conn, q=q_str)
+        _set_cached(cache_key, res)
+        return res
     finally:
         conn.close()
 
@@ -181,16 +205,34 @@ def overview(
     tool: Optional[str] = Query(None, description=_TOOL),
     incident_limit: int = Query(10, ge=1, le=50),
 ) -> dict[str, Any]:
+    pre = preset if isinstance(preset, str) else "24h"
+    sd = start_date if isinstance(start_date, str) else None
+    ed = end_date if isinstance(end_date, str) else None
+    st = start_time if isinstance(start_time, str) else None
+    et = end_time if isinstance(end_time, str) else None
+    p_name = pipeline_name if isinstance(pipeline_name, str) else None
+    p_id = pipeline_id if isinstance(pipeline_id, str) else None
+    st_val = status if isinstance(status, str) else None
+    t_val = tool if isinstance(tool, str) else None
+    inc_lim = int(getattr(incident_limit, "default", incident_limit) or 10)
+
+    cache_key = f"ov:{pre}:{sd}:{ed}:{st}:{et}:{p_name}:{p_id}:{st_val}:{t_val}:{inc_lim}"
+    hit = _get_cached(cache_key, 20.0)
+    if hit is not None:
+        return hit
+
     conn = _conn()
     try:
-        return build_overview(
+        res = build_overview(
             conn,
             **_common_filters(
-                preset, start_date, end_date, start_time, end_time,
-                pipeline_name, pipeline_id, status, tool,
+                pre, sd, ed, st, et,
+                p_name, p_id, st_val, t_val,
             ),
-            incident_limit=incident_limit,
+            incident_limit=inc_lim,
         )
+        _set_cached(cache_key, res)
+        return res
     finally:
         conn.close()
 
@@ -263,17 +305,28 @@ def overview_health(
     start_time: Optional[str] = Query(None),
     end_time: Optional[str] = Query(None),
 ) -> dict[str, Any]:
+    pre = preset if isinstance(preset, str) else "24h"
+    sd = start_date if isinstance(start_date, str) else None
+    ed = end_date if isinstance(end_date, str) else None
+    st = start_time if isinstance(start_time, str) else None
+    et = end_time if isinstance(end_time, str) else None
+    cache_key = f"health:{pre}:{sd}:{ed}:{st}:{et}"
+    hit = _get_cached(cache_key, 20.0)
+    if hit is not None:
+        return hit
     conn = _conn()
     try:
-        rng = parse_range(preset, start_date, end_date, start_time, end_time)
+        rng = parse_range(pre, sd, ed, st, et)
         health = build_overview_health(conn, rng)
-        return envelope(
+        res = envelope(
             rng=rng,
             filters_applied={"preset": rng.get("preset")},
             pillars=health["pillars"],
             health=health["pillars"],
             items=health["pillars"],
         )
+        _set_cached(cache_key, res)
+        return res
     finally:
         conn.close()
 
@@ -388,17 +441,36 @@ def pipelines_list(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
 ) -> dict[str, Any]:
+    pre = preset if isinstance(preset, str) else "24h"
+    sd = start_date if isinstance(start_date, str) else None
+    ed = end_date if isinstance(end_date, str) else None
+    st = start_time if isinstance(start_time, str) else None
+    et = end_time if isinstance(end_time, str) else None
+    p_name = pipeline_name if isinstance(pipeline_name, str) else None
+    p_id = pipeline_id if isinstance(pipeline_id, str) else None
+    st_val = status if isinstance(status, str) else None
+    t_val = tool if isinstance(tool, str) else None
+    p_num = int(getattr(page, "default", page) or 1)
+    p_sz = int(getattr(page_size, "default", page_size) or 20)
+
+    cache_key = f"pipes:{pre}:{sd}:{ed}:{st}:{et}:{p_name}:{p_id}:{st_val}:{t_val}:{p_num}:{p_sz}"
+    hit = _get_cached(cache_key, 20.0)
+    if hit is not None:
+        return hit
+
     conn = _conn()
     try:
-        return build_pipelines_list(
+        res = build_pipelines_list(
             conn,
             **_common_filters(
-                preset, start_date, end_date, start_time, end_time,
-                pipeline_name, pipeline_id, status, tool,
+                pre, sd, ed, st, et,
+                p_name, p_id, st_val, t_val,
             ),
-            page=page,
-            page_size=page_size,
+            page=p_num,
+            page_size=p_sz,
         )
+        _set_cached(cache_key, res)
+        return res
     finally:
         conn.close()
 
@@ -627,6 +699,61 @@ def lineage_detail(pipeline_id: str) -> dict[str, Any]:
         if data.get("error") == "pipeline_not_found":
             raise HTTPException(status_code=404, detail=f"Pipeline '{pipeline_id}' not found")
         return data
+    finally:
+        conn.close()
+
+
+@router.get("/observability/assets", tags=["Dashboard / Observability"], summary="Canonical assets list")
+@router.get("/assets", tags=["Dashboard / Observability"], summary="Canonical assets list")
+def list_canonical_assets(
+    tenant_id: Optional[str] = Query(None),
+    q: Optional[str] = Query(None, description="Search by dataset_id or pipeline_id"),
+    asset_type: Optional[str] = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=100),
+) -> dict[str, Any]:
+    conn = _conn()
+    try:
+        p_num = int(page.default if hasattr(page, "default") else (page or 1))
+        p_size = int(page_size.default if hasattr(page_size, "default") else (page_size or 50))
+        tid = tenant_id if isinstance(tenant_id, str) else "demo"
+        where_clauses = ["(tenant_id = %s OR tenant_id = 'default' OR tenant_id IS NULL)"]
+        params: list[Any] = [tid]
+        if q and isinstance(q, str):
+            where_clauses.append("(dataset_id LIKE %s OR pipeline_id LIKE %s)")
+            params.extend([f"%{q}%", f"%{q}%"])
+        if asset_type and isinstance(asset_type, str):
+            where_clauses.append("asset_type = %s")
+            params.append(asset_type)
+        where_str = " AND ".join(where_clauses)
+        offset = (p_num - 1) * p_size
+        rows = fetchall(
+            conn,
+            f"""
+            SELECT * FROM obs_assets
+            WHERE {where_str}
+            ORDER BY updated_at DESC, created_at DESC
+            LIMIT %s OFFSET %s
+            """,
+            params + [p_size, offset],
+        )
+        total_row = fetchone(
+            conn,
+            f"SELECT COUNT(*) AS total FROM obs_assets WHERE {where_str}",
+            params,
+        )
+        total = int(num(total_row.get("total") if total_row else len(rows)))
+        kpis = [
+            make_kpi(id="total_assets", title="Monitored Assets", value=total, display=str(total)),
+        ]
+        return envelope(
+            rng=parse_range("all"),
+            kpis=kpis,
+            items=[{k: json_val(v) for k, v in r.items()} for r in rows],
+            page=p_num,
+            page_size=p_size,
+            total=total,
+        )
     finally:
         conn.close()
 

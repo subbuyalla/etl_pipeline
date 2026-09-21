@@ -657,11 +657,12 @@ def tools_types() -> dict:
 def tools_list(
     kind: str | None = Query(default=None, description="database | etl"),
     connector_type: str | None = Query(default=None),
+    search: str | None = Query(default=None, description="Search term for tool name or connector type"),
 ) -> dict:
     try:
         return {
             "ok": True,
-            "items": list_tools(kind=kind, connector_type=connector_type),
+            "items": list_tools(kind=kind, connector_type=connector_type, search=search),
         }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -1058,8 +1059,10 @@ def pipelines_from_tools(body: ComposePipelineRequest) -> dict:
     tags=["2. Pipelines"],
     summary="List pipelines",
 )
-def pipelines_list() -> dict:
-    return {"ok": True, "pipelines": list_pipelines()}
+def pipelines_list(
+    search: str | None = Query(default=None, description="Search term for pipeline name, ID, or tool"),
+) -> dict:
+    return {"ok": True, "pipelines": list_pipelines(search=search)}
 
 
 @app.get(

@@ -165,35 +165,66 @@ class PostgresConnector:
                     expected_max=expected_max,
                 )
 
-            if kind in {"null_check", "null_pct"}:
-                self.cursor.execute(
-                    f"SELECT COUNT(*) AS total_rows, COUNT({col_q}) AS non_null_rows FROM {fqn}"
-                )
-                total, non_null = self.cursor.fetchone()
-                null_count = int(total or 0) - int(non_null or 0)
-                return build_observed_result(
-                    check_type="NOT_NULL",
-                    parts=parts,
-                    column_name=col,
-                    actual_value=null_count,
-                    expected_max=expected_max,
-                )
+            # Unified column profiling metrics query
+            self.cursor.execute(
+                f"""
+                SELECT COUNT(*) AS total_rows,
+                       COUNT({col_q}) AS non_null_rows,
+                       COUNT(DISTINCT {col_q}) AS distinct_count,
+                       COALESCE(SUM(CASE WHEN TRIM(CAST({col_q} AS VARCHAR)) = '' THEN 1 ELSE 0 END), 0) AS blank_count
+                FROM {fqn}
+                """
+            )
+            row = self.cursor.fetchone() or (0, 0, 0, 0)
+            total = int(row[0] or 0)
+            non_null = int(row[1] or 0)
+            distinct = int(row[2] or 0)
+            blank = int(row[3] or 0)
 
-            if kind in {"unique_check", "unique_violation", "duplicate_check", "duplicate_count"}:
-                self.cursor.execute(
-                    f"SELECT COUNT(*) - COUNT(DISTINCT {col_q}) AS dup_count FROM {fqn}"
-                )
-                dup_count = int((self.cursor.fetchone() or [0])[0] or 0)
+            null_count = max(0, total - non_null)
+            dup_count = max(0, total - distinct)
+            null_rate = round(100.0 * null_count / total, 2) if total > 0 else 0.0
+            non_null_rate = round(100.0 * non_null / total, 2) if total > 0 else 0.0
+            unique_rate = round(100.0 * distinct / total, 2) if total > 0 else 0.0
+
+            if kind in {"null_rate", "null_pct"}:
+                actual_val = null_rate
+                ctype = "NULL_RATE"
+            elif kind == "non_null_rate":
+                actual_val = non_null_rate
+                ctype = "NON_NULL_RATE"
+            elif kind == "null_check":
+                actual_val = null_count
+                ctype = "NOT_NULL"
+            elif kind in {"unique_rate"}:
+                actual_val = unique_rate
+                ctype = "UNIQUE_RATE"
+            elif kind in {"distinct_count"}:
+                actual_val = distinct
+                ctype = "DISTINCT_COUNT"
+            elif kind in {"blank_count", "empty_string_count"}:
+                actual_val = blank
+                ctype = "BLANK_COUNT"
+            elif kind in {"unique_check", "unique_violation", "duplicate_check", "duplicate_count"}:
+                actual_val = dup_count
                 ctype = "UNIQUE" if "unique" in kind else "DUPLICATE"
-                return build_observed_result(
-                    check_type=ctype,
-                    parts=parts,
-                    column_name=col,
-                    actual_value=dup_count,
-                    expected_max=expected_max,
-                )
+            else:
+                raise ValueError(f"Unsupported check_type: {check_type}")
 
-            raise ValueError(f"Unsupported check_type: {check_type}")
+            return build_observed_result(
+                check_type=ctype,
+                parts=parts,
+                column_name=col,
+                actual_value=actual_val,
+                expected_max=expected_max,
+                total_rows=total,
+                null_count=null_count,
+                null_rate=null_rate,
+                distinct_count=distinct,
+                unique_rate=unique_rate,
+                blank_count=blank,
+                non_null_rate=non_null_rate,
+            )
         finally:
             try:
                 self.cursor.close()

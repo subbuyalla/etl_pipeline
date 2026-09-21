@@ -108,7 +108,13 @@ def _build_db_connector(tool: dict, secret: str):
     from application.src.sync_once import connector_kwargs_from_tool
 
     ctype = str(tool.get("connector_type") or "").lower()
-    if ctype not in {"snowflake", "snowflake_lab", "postgres", "postgresql", "bigquery", "bq"}:
+    if ctype not in {
+        "snowflake", "snowflake_lab",
+        "postgres", "postgresql",
+        "bigquery", "bq",
+        "mysql", "mysql_lab",
+        "redshift",
+    }:
         return None
     kwargs = connector_kwargs_from_tool(tool, tenant_id=str(tool.get("tenant_id") or "default"))
     if secret:
@@ -117,7 +123,7 @@ def _build_db_connector(tool: dict, secret: str):
 
 
 def _target_db_connector(conn, pipeline_id: str, *, dataset_id: str | None = None):
-    """Best-effort TARGET database connector (Snowflake, Postgres, BigQuery)."""
+    """Best-effort TARGET database connector (Snowflake, Postgres, BigQuery, MySQL, Redshift)."""
     from application.src.store.meta_mysql import get_decrypted_tool_secret, get_tool, list_pipeline_bindings
 
     bindings = [

@@ -23,28 +23,28 @@ def audit() -> dict:
     finally:
         conn.close()
     tools = list_tools()
-        flagged = []
-        for t in tools or []:
-            cfg = t.get("config") or {}
-            if isinstance(cfg, str):
-                try:
-                    cfg = json.loads(cfg)
-                except json.JSONDecodeError:
-                    cfg = {}
-            has_secret = bool(t.get("has_secret"))
-            token_env = cfg.get("api_token_env") or cfg.get("password_env")
-            if not has_secret and token_env:
-                flagged.append(
-                    {
-                        "tool_id": t.get("tool_id"),
-                        "name": t.get("name"),
-                        "connector_type": t.get("connector_type"),
-                        "kind": t.get("kind"),
-                        "api_token_env": token_env,
-                        "has_secret": has_secret,
-                    }
-                )
-        return {"ok": True, "total_tools": len(tools or []), "missing_secret": flagged}
+    flagged = []
+    for t in tools or []:
+        cfg = t.get("config") or {}
+        if isinstance(cfg, str):
+            try:
+                cfg = json.loads(cfg)
+            except json.JSONDecodeError:
+                cfg = {}
+        has_secret = bool(t.get("has_secret"))
+        token_env = cfg.get("api_token_env") or cfg.get("password_env")
+        if not has_secret and token_env:
+            flagged.append(
+                {
+                    "tool_id": t.get("tool_id"),
+                    "name": t.get("name"),
+                    "connector_type": t.get("connector_type"),
+                    "kind": t.get("kind"),
+                    "api_token_env": token_env,
+                    "has_secret": has_secret,
+                }
+            )
+    return {"ok": True, "total_tools": len(tools or []), "missing_secret": flagged}
 
 
 def main() -> int:

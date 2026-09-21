@@ -470,7 +470,11 @@ def _collect_db_side(
     meta: dict[str, Any] = {"instance_id": iid, "reused": False}
 
     if not force_refresh:
-        snaps = store_mod.get_fresh_tool_snapshots(iid, asset_role=asset_role)
+        snaps = store_mod.get_fresh_tool_snapshots(
+            iid,
+            asset_role=asset_role,
+            dataset_ids=table_filter if table_filter else None,
+        )
         if snaps:
             rows: list[dict] = []
             cols: list[dict] = []

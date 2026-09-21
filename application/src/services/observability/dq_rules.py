@@ -17,15 +17,25 @@ def _evaluate_one_rule(conn, rule: dict) -> tuple[str, str, str, dict[str, Any]]
     cfg = rule.get("config") or {}
     dataset_id = normalize_dataset_id(rule.get("dataset_id") or cfg.get("dataset_id"))
     column_name = str(rule.get("column_name") or cfg.get("column_name") or "")
-    expected_max = int(cfg.get("expected_max") or 0)
+    expected_max = float(cfg.get("expected_max") if cfg.get("expected_max") is not None else 0)
     check_kind = _RULE_TYPE_TO_CHECK_KIND.get(rtype, "custom_sql")
 
-    if rtype in {"NOT_NULL", "UNIQUE", "DUPLICATE"}:
+    if rtype in {
+        "NOT_NULL",
+        "UNIQUE",
+        "DUPLICATE",
+        "NULL_RATE",
+        "UNIQUE_RATE",
+        "NON_NULL_RATE",
+        "BLANK_COUNT",
+        "EMPTY_STRING_COUNT",
+        "DISTINCT_COUNT",
+    }:
         if not dataset_id or not column_name:
             return "pass", "low", "rule config incomplete", {"skipped": True}
         connector = _target_db_connector(conn, pid, dataset_id=dataset_id)
-        if connector is None:
-            return "pass", "low", "warehouse credentials unavailable — rule skipped", {"skipped": True}
+        if connector is None or not hasattr(connector, "run_column_validation"):
+            return "pass", "low", "warehouse credentials unavailable or validation unsupported — rule skipped", {"skipped": True}
         try:
             observed = connector.run_column_validation(
                 dataset_id=dataset_id,
@@ -41,8 +51,8 @@ def _evaluate_one_rule(conn, rule: dict) -> tuple[str, str, str, dict[str, Any]]
         if not sql:
             return "pass", "low", "custom_sql rule missing sql", {"skipped": True}
         connector = _target_db_connector(conn, pid, dataset_id=dataset_id or None)
-        if connector is None:
-            return "pass", "low", "warehouse credentials unavailable — rule skipped", {"skipped": True}
+        if connector is None or not hasattr(connector, "run_column_validation"):
+            return "pass", "low", "warehouse credentials unavailable or validation unsupported — rule skipped", {"skipped": True}
         try:
             observed = connector.run_column_validation(
                 dataset_id=dataset_id or "DB.SCHEMA.TABLE",
@@ -64,8 +74,8 @@ def _evaluate_one_rule(conn, rule: dict) -> tuple[str, str, str, dict[str, Any]]
             f"WHERE {col} IS NOT NULL AND {col} NOT IN ({vals})"
         )
         connector = _target_db_connector(conn, pid, dataset_id=dataset_id)
-        if connector is None:
-            return "pass", "low", "warehouse credentials unavailable — rule skipped", {"skipped": True}
+        if connector is None or not hasattr(connector, "run_column_validation"):
+            return "pass", "low", "warehouse credentials unavailable or validation unsupported — rule skipped", {"skipped": True}
         try:
             observed = connector.run_column_validation(
                 dataset_id=dataset_id,
@@ -93,8 +103,8 @@ def _evaluate_one_rule(conn, rule: dict) -> tuple[str, str, str, dict[str, Any]]
         if not sql:
             return "pass", "low", "range rule missing bounds/sql", {"skipped": True}
         connector = _target_db_connector(conn, pid, dataset_id=dataset_id)
-        if connector is None:
-            return "pass", "low", "warehouse credentials unavailable — rule skipped", {"skipped": True}
+        if connector is None or not hasattr(connector, "run_column_validation"):
+            return "pass", "low", "warehouse credentials unavailable or validation unsupported — rule skipped", {"skipped": True}
         try:
             observed = connector.run_column_validation(
                 dataset_id=dataset_id,
@@ -113,12 +123,16 @@ def _evaluate_one_rule(conn, rule: dict) -> tuple[str, str, str, dict[str, Any]]
     observed["rule_type"] = rtype
     observed["dimension"] = rule.get("dimension") or infer_dimension(monitor_kind=check_kind)
     observed["tags"] = rule.get("tags") or []
-    failure = int(observed.get("failure_count") or 0)
-    if failure > expected_max:
+    failure = observed.get("failure_count")
+    failure_val = float(failure) if failure is not None else 0.0
+    actual_val = observed.get("actual_value")
+    if failure_val > 0:
+        val_str = f"{actual_val}%" if "RATE" in rtype else f"{actual_val}"
+        max_str = f"{expected_max}%" if "RATE" in rtype else f"{expected_max}"
         return (
             "fail",
             str(rule.get("severity") or "high"),
-            f"{rtype} failed: {failure} violations (max {expected_max})",
+            f"{rtype} failed: observed {val_str} (expected max {max_str})",
             observed,
         )
     return "pass", "low", "rule ok", observed
