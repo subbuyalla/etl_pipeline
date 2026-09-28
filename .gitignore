@@ -12,6 +12,7 @@ vgen/vgen.exe
 *.exe
 
 # Scratch
+scratch/
 doc1_text.txt
 doc2_text.txt
 

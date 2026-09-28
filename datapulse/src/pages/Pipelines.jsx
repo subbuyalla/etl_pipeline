@@ -1,10 +1,11 @@
 import { useEffect, useState, useMemo, useCallback, useRef } from 'react';
+import { Link } from 'react-router-dom';
 import {
   GitBranch, CheckCircle, Clock,
   ArrowUpRight, Search, Eye,
   ChevronLeft, ChevronRight, X, Terminal, AlertTriangle,
   RotateCcw, ArrowRight, Activity, Shield, Layers, Database,
-  CheckSquare, ExternalLink,
+  CheckSquare, ExternalLink, ShieldCheck,
 } from 'lucide-react';
 import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
@@ -454,6 +455,51 @@ export default function Pipelines() {
             <div><strong>Failed to load pipelines:</strong> {error}</div>
           </div>
         )}
+
+        {/* ── DataOps Practice Diagnostic & Reliability Banner ─────── */}
+        <div style={{
+          marginBottom: 16,
+          padding: '12px 16px',
+          borderRadius: 8,
+          background: 'linear-gradient(90deg, rgba(99, 102, 241, 0.08) 0%, rgba(59, 130, 246, 0.05) 100%)',
+          border: '1px solid rgba(99, 102, 241, 0.25)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          flexWrap: 'wrap',
+          gap: 12,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div style={{
+              width: 32,
+              height: 32,
+              borderRadius: 6,
+              background: '#EEF2FF',
+              color: '#4F46E5',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}>
+              <ShieldCheck size={18} />
+            </div>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>
+                Vithi DataOps Practice Diagnostic & Pipeline Reliability
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                Audit 8 pipeline dimensions (D1 Orchestration to D8 FinOps), circuit breaking gates, and 30/60/90-day stabilization.
+              </div>
+            </div>
+          </div>
+          <Link
+            to="/dataops/maturity"
+            className="btn btn-primary btn-sm"
+            style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 6 }}
+          >
+            <span>View DataOps Maturity</span>
+            <ArrowUpRight size={14} />
+          </Link>
+        </div>
 
         {/* ── TOP FILTERS & SEARCH BAR (API-Synchronized) ─────────────── */}
         <div className="filters-bar" style={{ marginBottom: 16 }}>

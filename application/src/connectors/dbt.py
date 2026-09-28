@@ -490,12 +490,15 @@ class DbtConnector:
             elif status in {"warn", "warning"}:
                 sev = "medium"
             msg = result.get("message") or result.get("error") or ""
+            failures = result.get("failures")
             tests.append(
                 {
                     "test_id": uid,
                     "status": status or "unknown",
                     "severity": sev,
                     "message": str(msg)[:2000] if msg else None,
+                    "failures": failures,
+                    "failures_count": failures,
                     "relation_name": result.get("relation_name"),
                     "execution_time": result.get("execution_time"),
                 }

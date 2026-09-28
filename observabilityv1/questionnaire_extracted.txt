@@ -1,0 +1,447 @@
+VITHI CONSULTING ASSESSMENT DIAGNOSTIC FRAMEWORK
+Observability Maturity Assessment Questionnaire
+Customer Discovery, Business Trigger Diagnostic, and Evidence-Based Scoring Across Service, Data Pipeline & AI Estates
+CONSULTATIVE ASSESSMENT METHODOLOGYPURPOSE & ASSESSMENT DISCIPLINE: This questionnaire establishes an evidence-backed baseline across telemetry breadth, distributed tracing, alerting precision, SLO governance, data pipelines, and AI data flows. All numerical ratings (Level 1 to 5) must be corroborated by physical evidence artifacts (EV01–EV12). Unverified claims are tagged as 'Unknown' to maintain consulting credibility.
+Part 0: Front-End Business Trigger & Executive Context
+Before assessing technical telemetry, the assessor must capture the business catalysts, critical assets, failure blast radius, executive sponsors, and intended decisions that justify this engagement:
+Trigger ID
+Strategic Context Parameter
+Diagnostic Discovery Question
+Customer Response & Notes
+BT-01
+Review Catalyst
+What specific incident, major outage, customer escalation, SLA breach, regulatory audit request, or unbudgeted tool cost spike triggered this review?
+[e.g., Sev-1 payment checkout timeout (38m downtime); 42% Datadog cost spike; on-call engineer burnout]
+BT-02
+Business-Critical Assets
+Which specific services, digital products, data pipelines, customer journeys, or executive BI dashboards cause immediate financial or brand damage if degraded?
+[e.g., Core Payment API, Fraud Detection Kafka Streaming, Wealth Management Daily P&L Looker Report]
+BT-03
+Failure Blast Radius
+What tangible business consequence occurs when observability fails? (Direct transaction drops, customer checkout disruption, regulatory exposure, customer churn, developer attrition)?
+[e.g., 4,200 failed customer checkouts during peak outage; 4-hour delay in executive trading desk risk reporting]
+BT-04
+Executive Sponsorship
+Who is the primary executive sponsor and co-sponsor championing this assessment (CIO, CTO, CDO, Head of SRE/Engineering, Head of Data, Business COO)?
+[e.g., VP of Site Reliability & Cloud Ops (Sponsor); Head of Enterprise Data Architecture (Co-Sponsor)]
+BT-05
+Target Strategic Decision
+What specific decision must this assessment support: tool consolidation/rationalization, SRE error budget rollout, 30-day alert reset, MTTR reduction, or managed services?
+[e.g., Authorize 30-day alert noise reset; consolidate duplicate Splunk/CloudWatch logging; enforce Tier-1 SLOs]
+BT-06
+Tool Ingestion & Engineering Overhead
+What is the total operational footprint of observability tools (Datadog, Splunk, CloudWatch, Dynatrace, New Relic), and is there an executive mandate to reduce engineering toil and alert noise?
+[e.g., Sprawling multi-tool stack generating 32,000 alerts/month; executive mandate to cut engineering triage effort and noise by ≥50%]
+Part 1: Core Service & Engineering Observability (O0 — O7)
+Diagnostic questions scored on a 1.0 to 5.0 scale, supported by audited physical evidence:
+O0 — Observability Strategy, Ownership & Estate Criticality
+Q-ID
+Diagnostic Question
+Response Scale / Measure
+Required Evidence
+Customer Baseline
+Assessor Score (1-5)
+0.1
+What percentage of Tier-1 services have a named technical owner and active on-call rotation?
+% Coverage (0-100%)
+EV01, EV05
+65% mapped; 35% unmaintained in wiki
+2.5
+0.2
+Is observability reviewed as an automated release gate in CI/CD before a service goes to production?
+Practice Maturity (1-5)
+EV01, EV03
+Manual ad-hoc check; no CI/CD gate
+1.5
+0.3
+Is there an agreed telemetry standard (e.g. OpenTelemetry semantic conventions) adopted across all squads?
+Practice Maturity (1-5)
+EV02, EV03
+JSON logging standard adopted in 60% repos
+2.0
+0.4
+Are monthly observability costs, license usage, and data ingestion tracked and reviewed with leadership?
+Practice Maturity (1-5)
+EV11
+Central IT bill; zero squad showback
+2.0
+O1 — Telemetry Collection, Breadth & OpenTelemetry Ingestion
+Q-ID
+Diagnostic Question
+Response Scale / Measure
+Required Evidence
+Customer Baseline
+Assessor Score (1-5)
+1.1
+What percentage of Tier-1 services emit standardized logs, metrics, and traces?
+% Coverage (0-100%)
+EV03
+85% host/EKS metrics; serverless missing
+2.5
+1.2
+What percentage of Tier-1 services expose customer-impacting Golden Signals, not only CPU and RAM?
+% Coverage (0-100%)
+EV03, EV07
+45% have latency/error signals
+2.5
+1.3
+What percentage of serverless, batch, and third-party API dependencies have telemetry coverage?
+% Coverage (0-100%)
+EV03
+Serverless unmonitored; API timeouts blind
+1.5
+1.4
+Are synthetic transactions running 24/7 to validate external user checkout and login journeys?
+Practice Maturity (1-5)
+EV07
+3 basic HTTP pings; no multi-step scripts
+1.5
+O2 — Correlation, Distributed Tracing & Context Propagation
+Q-ID
+Diagnostic Question
+Response Scale / Measure
+Required Evidence
+Customer Baseline
+Assessor Score (1-5)
+2.1
+Can an engineer trace a single customer transaction end-to-end across all microservice hops?
+Practice Maturity (1-5)
+EV03, EV08
+Traces break at Kafka message broker
+1.5
+2.2
+Are correlation IDs (traceId, spanId) injected into 100% of application log outputs?
+% Coverage (0-100%)
+EV03, EV04
+45% Java services inject traceId
+2.0
+2.3
+Is there an automated, real-time service dependency map showing active bottlenecks and error rates?
+Practice Maturity (1-5)
+EV02, EV07
+Static Datadog map; lacks Kafka workers
+2.5
+2.4
+Is trace sampling managed dynamically (tail-based) to capture 100% of errors without bill shock?
+Practice Maturity (1-5)
+EV03, EV11
+Fixed random 10% head sampling
+1.5
+O3 — Alert Quality, Signal-to-Noise & Routing Precision
+Q-ID
+Diagnostic Question
+Response Scale / Measure
+Required Evidence
+Customer Baseline
+Assessor Score (1-5)
+3.1
+What percentage of alerts delivered to on-call engineers are actionable and require human intervention?
+% Actionable (0-100%)
+EV04
+39% actionable (61% false alarms/noise)
+1.5
+3.2
+What percentage of critical alerts include a direct link to an active, verified operational runbook URL?
+% Coverage (0-100%)
+EV05, EV08
+Only 12% alerts provide runbook URLs
+1.5
+3.3
+Are alert thresholds dynamically tuned using anomaly detection rather than static CPU/memory thresholds?
+Practice Maturity (1-5)
+EV04
+Static 80% CPU triggers nightly in backups
+1.5
+3.4
+Are cascading alert storms automatically grouped and de-duplicated during a major outage?
+Practice Maturity (1-5)
+EV04
+Single DB failure paged 6 squads (420 alerts)
+2.0
+O4 — SLI, SLO & Error Budget Management
+Q-ID
+Diagnostic Question
+Response Scale / Measure
+Required Evidence
+Customer Baseline
+Assessor Score (1-5)
+4.1
+Are Service Level Objectives (SLOs) defined and published for all customer-facing Tier-1 services?
+% Coverage (0-100%)
+EV06
+No formal SLO register; uptime only
+1.5
+4.2
+Are multi-window multi-burn-rate alerts (e.g. 14.4x 1-hour, 6x 6-hour) deployed instead of static alerts?
+Practice Maturity (1-5)
+EV06
+Zero burn-rate alerting in place
+1.0
+4.3
+Is there an executive-backed Error Budget Policy governing release freezes when budgets are exhausted?
+Practice Maturity (1-5)
+EV06
+Product squads push code regardless
+1.0
+4.4
+Are monthly SLO compliance and reliability burn-down reports shared with executive leadership?
+Practice Maturity (1-5)
+EV06, EV07
+Conflicting uptime numbers reported
+1.5
+O5 — Dashboards & Operational Golden Signals
+Q-ID
+Diagnostic Question
+Response Scale / Measure
+Required Evidence
+Customer Baseline
+Assessor Score (1-5)
+5.1
+Do Tier-1 services have standardized Golden Signal dashboards (Latency, Traffic, Errors, Saturation)?
+Practice Maturity (1-5)
+EV07
+58 disparate dashboards; high clutter
+2.5
+5.2
+Is dashboard sprawl actively governed and unmaintained/unused dashboards archived regularly?
+Practice Maturity (1-5)
+EV07
+65% of dashboards unviewed in >90 days
+1.5
+5.3
+Can engineers navigate from a dashboard graph to corresponding trace spans and logs in 1 click?
+Practice Maturity (1-5)
+EV07
+Manual copy-pasting of timestamps
+2.0
+5.4
+Are real-time business transaction throughput volumes displayed alongside infrastructure health?
+Practice Maturity (1-5)
+EV07
+Infra metrics only; zero business throughput data
+2.0
+O6 — Incident Response, MTTR & Continuous RCA
+Q-ID
+Diagnostic Question
+Response Scale / Measure
+Required Evidence
+Customer Baseline
+Assessor Score (1-5)
+6.1
+What is the historical Mean Time to Acknowledge (MTTA) and Mean Time to Resolve (MTTR) for Sev-1/2s?
+MTTR Minutes
+EV04, EV08
+MTTA = 4 mins; MTTR = 165 minutes
+2.5
+6.2
+Are blameless Post-Incident Reviews (PIR) conducted within 72 hours and tracked to completion in Jira?
+Practice Maturity (1-5)
+EV08
+PIRs held irregularly; tickets open
+2.5
+6.3
+Do past post-mortem remediation action items prevent identical failures from recurring in production?
+Practice Maturity (1-5)
+EV08
+3 identical DB connection pool outages
+2.0
+6.4
+Are customer status pages automated directly from incident triggers to manage stakeholder comms?
+Practice Maturity (1-5)
+EV08
+Support inundated with calls before notice
+2.0
+O7 — Logging Cost, Retention & FinOps Governance
+Q-ID
+Diagnostic Question
+Response Scale / Measure
+Required Evidence
+Customer Baseline
+Assessor Score (1-5)
+7.1
+Are log retention policies tiered based on operational vs audit compliance value (Hot, Warm, Glacier)?
+Practice Maturity (1-5)
+EV03, EV11
+All logs retained 365d in hot tier
+1.5
+7.2
+Are high-volume debug logs filtered or sampled at the container edge before cloud ingestion?
+Practice Maturity (1-5)
+EV03, EV11
+Debug logs active in prod (38% volume)
+1.5
+7.3
+Are PII, credentials, and credit card numbers automatically masked or tokenized before log ingestion?
+Practice Maturity (1-5)
+EV03
+Basic regex masking; edge cases leak
+2.5
+7.4
+Is there automated chargeback/showback for observability SaaS and cloud ingestion spend by squad?
+Practice Maturity (1-5)
+EV11
+Central IT pays entire vendor bill
+1.0
+Part 2: Parallel Data, Pipeline & AI-Flow Observability (The Differentiator)
+This section prevents the assessment from being pulled into generic APM competition by evaluating data pipelines, data products, executive dashboards, and generative AI flows:
+O8 — Critical Data Pipelines & Pipeline Health
+Q-ID
+Diagnostic Question
+Response Scale / Measure
+Required Evidence
+Customer Baseline
+Assessor Score (1-5)
+8.1
+Are critical ETL/ELT batch pipelines (Airflow, Glue, Spark) monitored for execution duration variance?
+% Coverage (0-100%)
+EV09
+Airflow alerts on total failure only
+2.0
+8.2
+Are automated SLA miss callbacks triggered when a daily batch pipeline exceeds its allowable runtime window?
+Practice Maturity (1-5)
+EV09
+Silent 3-hour job delays go unnoticed
+1.5
+8.3
+Is streaming consumer lag on Kafka / Kinesis queues monitored with alerts before backpressure occurs?
+Practice Maturity (1-5)
+EV09
+Kafka lag untracked until memory crash
+1.5
+8.4
+Can data engineers trace an Airflow task failure to the underlying Spark executor log in 1 click?
+Practice Maturity (1-5)
+EV09
+Manual SSH to cluster nodes
+1.5
+O9 — Critical Data Products & Table Health
+Q-ID
+Diagnostic Question
+Response Scale / Measure
+Required Evidence
+Customer Baseline
+Assessor Score (1-5)
+9.1
+Are automated freshness timestamp checks running to detect stale data in gold/reporting tables?
+Practice Maturity (1-5)
+EV10
+Stale reports discovered by users
+1.5
+9.2
+Are volume anomaly monitors active to alert on unexpected row-count drops (e.g. 40% ingestion drops)?
+Practice Maturity (1-5)
+EV10
+Zero volume anomaly alerts active
+1.0
+9.3
+Is schema validation automated to block unannounced column drops, type mutations, or renaming?
+Practice Maturity (1-5)
+EV10
+Upstream DB schema change broke BI
+1.0
+9.4
+Are automated data quality tests (null rates, uniqueness, range checks) executed at the ingestion boundary?
+Practice Maturity (1-5)
+EV10
+Manual SQL checks conducted ad-hoc
+1.5
+O10 — Business Dashboards & Data Consumers
+Q-ID
+Diagnostic Question
+Response Scale / Measure
+Required Evidence
+Customer Baseline
+Assessor Score (1-5)
+10.1
+Are executive BI dashboards (Looker, Tableau, PowerBI) monitored for query performance degradation?
+Practice Maturity (1-5)
+EV07
+Complaints received when load >30s
+1.5
+10.2
+Are automated warning banners displayed on executive dashboards when upstream data pipelines are delayed?
+Practice Maturity (1-5)
+EV07, EV10
+Executives view stale data unknowingly
+1.0
+10.3
+Is end-to-end data lineage documented from the source transactional table to the final BI metric?
+Practice Maturity (1-5)
+EV09, EV10
+Static wiki diagrams unmaintained
+1.5
+10.4
+Are downstream business consumers proactively notified before planned pipeline maintenance or delays?
+Practice Maturity (1-5)
+EV08
+Notification sent only after complaints
+1.5
+O11 — Tool Architecture & Rationalization
+Q-ID
+Diagnostic Question
+Response Scale / Measure
+Required Evidence
+Customer Baseline
+Assessor Score (1-5)
+11.1
+Is the observability architecture built on open standards (OpenTelemetry) to avoid vendor lock-in?
+Practice Maturity (1-5)
+EV02, EV03
+Heavy lock-in to proprietary agents
+2.0
+11.2
+Are duplicate monitoring and log aggregation licenses identified for decommissioning (e.g. Splunk vs Datadog)?
+Practice Maturity (1-5)
+EV03, EV11
+Triple-logging across 3 separate tools
+1.5
+11.3
+Are cross-region cloud telemetry data egress volumes actively monitored and optimized via local collectors?
+Practice Maturity (1-5)
+EV11
+Unbudgeted egress volume spikes due to uncompressed logs
+2.0
+11.4
+Is there a single pane of glass correlating infrastructure metrics, application traces, and data pipeline health?
+Practice Maturity (1-5)
+EV02, EV07
+Teams maintain separate dashboards
+1.5
+O12 — AI / GenAI & RAG Data Flows (Modular Extension)
+Q-ID
+Diagnostic Question
+Response Scale / Measure
+Required Evidence
+Customer Baseline
+Assessor Score (1-5)
+12.1
+Are LLM / GenAI inference latencies, prompt tokens, and completion costs tracked per application/squad?
+Practice Maturity (1-5)
+EV12
+Bedrock chatbot running with zero telemetry
+1.5
+12.2
+Are vector search retrieval latencies (OpenSearch / Pinecone) and similarity threshold scores monitored?
+Practice Maturity (1-5)
+EV12
+Vector search latency uninstrumented
+1.0
+12.3
+Are automated evaluation metrics (faithfulness, context relevance, hallucination rate) tracked in production?
+Practice Maturity (1-5)
+EV12
+Hallucinations reported manually by users
+1.0
+12.4
+Is the freshness and embedding sync lag of knowledge-base documents powering RAG flows observable?
+Practice Maturity (1-5)
+EV12
+Knowledge base sync lag unknown
+1.5
+Part 3: Assessment Execution & Governance Flow
+The completion of this questionnaire initiates Vithi's structured 4-step diagnostic flow:
+Step 1 — Discovery & Trigger Alignment (Day 1): Assessor and client leadership align on business triggers (BT-01 to BT-06) and confirm in-scope assets.
+Step 2 — Questionnaire Self-Scoring (Days 2–4): Engineering and data squad leads complete self-scores and provide evidence pointers.
+Step 3 — Two-Week Evidence Sprint (Weeks 1–2): Vithi Principal Architects inspect 12 concrete evidence artifacts (EV01–EV12) under read-only access to validate scores.
+Step 4 — Executive Readout & Roadmap (Week 3): Formal readout presenting the audited Maturity Scorecard, 1-page executive summary, tool rationalization savings, and 3-horizon transformation roadmap.

@@ -234,7 +234,34 @@ export const evaluateMonitors = () =>
 export const evaluateDqRules = (pipelineId) =>
   api.post('/api/v1/ops/evaluate-dq-rules', null, { params: pipelineId ? { pipeline_id: pipelineId } : {} }).then(r => r.data);
 
+// ── Observability Maturity Assessment & KPI Matrix ───────────────────────────
+export const fetchAssessmentSummary = (params = {}) =>
+  safeGet('/api/v1/assessment/summary', null, params);
+
+export const fetchAssessmentScorecard = (params = {}) =>
+  safeGet('/api/v1/assessment/scorecard', null, params);
+
+export const fetchAssessmentRoi = (params = {}) =>
+  safeGet('/api/v1/assessment/roi-model', null, params);
+
+export const fetchAssessmentRoadmap = (params = {}) =>
+  safeGet('/api/v1/assessment/roadmap', null, params);
+
+// ── DataOps Practice Diagnostic & Reliability Assessment ────────────────────
+export const fetchDataOpsSummary = (params = {}) =>
+  safeGet('/api/v1/dataops/summary', null, params);
+
+export const fetchDataOpsScorecard = (params = {}) =>
+  safeGet('/api/v1/dataops/scorecard', null, params);
+
+export const fetchDataOpsOutcomes = (params = {}) =>
+  safeGet('/api/v1/dataops/outcomes', null, params);
+
+export const fetchDataOpsRoadmap = (params = {}) =>
+  safeGet('/api/v1/dataops/roadmap', null, params);
+
 // ── Convenience Aliases ──────────────────────────────────────────────────────
 export const fetchHealth = fetchOverviewHealth;
 
 export default api;
+

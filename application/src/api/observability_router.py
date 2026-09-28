@@ -1242,3 +1242,276 @@ def api_list_tools(
 
     return {"ok": True, "items": list_tools(kind=kind, connector_type=connector_type)}
 
+
+# =============================================================================
+# Observability Maturity Assessment & Executive KPI Matrix
+# =============================================================================
+
+@router.get(
+    "/assessment/summary",
+    tags=["Dashboard / Assessment & Maturity"],
+    summary="Observability Maturity Summary & KPIs",
+    description="Returns live 1.0-5.0 maturity score, 5-pillar cluster breakdown, and ROI capacity metrics calculated directly from pipeline telemetry.",
+)
+def assessment_summary(
+    preset: Optional[str] = Query("all", description=_PRE),
+    start_date: Optional[str] = Query(None, description=_SD),
+    end_date: Optional[str] = Query(None, description=_ED),
+    pipeline_name: Optional[str] = Query(None, description=_P),
+    pipeline_id: Optional[str] = Query(None, description=_PID),
+    tool: Optional[str] = Query(None, description=_TOOL),
+) -> dict[str, Any]:
+    from application.src.services.observability.assessment_engine import build_assessment_summary
+
+    pre = preset if isinstance(preset, str) else "all"
+    sd = start_date if isinstance(start_date, str) else None
+    ed = end_date if isinstance(end_date, str) else None
+    p_name = pipeline_name if isinstance(pipeline_name, str) else None
+    p_id = pipeline_id if isinstance(pipeline_id, str) else None
+    t_val = tool if isinstance(tool, str) else None
+
+    conn = _conn()
+    try:
+        rng = parse_range(pre, sd, ed)
+        filters = dict(pipeline_name=p_name, pipeline_id=p_id, tool=t_val)
+        res = build_assessment_summary(conn, rng, **filters)
+        return envelope(rng=rng, filters_applied={**filters, "preset": rng.get("preset")}, **res)
+    finally:
+        conn.close()
+
+
+@router.get(
+    "/assessment/scorecard",
+    tags=["Dashboard / Assessment & Maturity"],
+    summary="Observability Domain Scorecard (12 Domains)",
+    description="Returns 12 capability domains (O0-O11) mapped to audited pipeline telemetry and baseline vs target benchmarks.",
+)
+def assessment_scorecard(
+    preset: Optional[str] = Query("all", description=_PRE),
+    start_date: Optional[str] = Query(None, description=_SD),
+    end_date: Optional[str] = Query(None, description=_ED),
+    pipeline_name: Optional[str] = Query(None, description=_P),
+    pipeline_id: Optional[str] = Query(None, description=_PID),
+    tool: Optional[str] = Query(None, description=_TOOL),
+) -> dict[str, Any]:
+    from application.src.services.observability.assessment_engine import build_assessment_scorecard
+
+    pre = preset if isinstance(preset, str) else "all"
+    sd = start_date if isinstance(start_date, str) else None
+    ed = end_date if isinstance(end_date, str) else None
+    p_name = pipeline_name if isinstance(pipeline_name, str) else None
+    p_id = pipeline_id if isinstance(pipeline_id, str) else None
+    t_val = tool if isinstance(tool, str) else None
+
+    conn = _conn()
+    try:
+        rng = parse_range(pre, sd, ed)
+        filters = dict(pipeline_name=p_name, pipeline_id=p_id, tool=t_val)
+        res = build_assessment_scorecard(conn, rng, **filters)
+        return envelope(rng=rng, filters_applied={**filters, "preset": rng.get("preset")}, **res)
+    finally:
+        conn.close()
+
+
+@router.get(
+    "/assessment/roi-model",
+    tags=["Dashboard / Assessment & Maturity"],
+    summary="Observability ROI & Value Realization Model",
+    description="Returns quantified business impact across outage recovery, alert noise reduction, and engineering capacity reclaimed.",
+)
+def assessment_roi_model(
+    preset: Optional[str] = Query("all", description=_PRE),
+    start_date: Optional[str] = Query(None, description=_SD),
+    end_date: Optional[str] = Query(None, description=_ED),
+    pipeline_name: Optional[str] = Query(None, description=_P),
+    pipeline_id: Optional[str] = Query(None, description=_PID),
+    tool: Optional[str] = Query(None, description=_TOOL),
+) -> dict[str, Any]:
+    from application.src.services.observability.assessment_engine import build_assessment_roi_model
+
+    pre = preset if isinstance(preset, str) else "all"
+    sd = start_date if isinstance(start_date, str) else None
+    ed = end_date if isinstance(end_date, str) else None
+    p_name = pipeline_name if isinstance(pipeline_name, str) else None
+    p_id = pipeline_id if isinstance(pipeline_id, str) else None
+    t_val = tool if isinstance(tool, str) else None
+
+    conn = _conn()
+    try:
+        rng = parse_range(pre, sd, ed)
+        filters = dict(pipeline_name=p_name, pipeline_id=p_id, tool=t_val)
+        res = build_assessment_roi_model(conn, rng, **filters)
+        return envelope(rng=rng, filters_applied={**filters, "preset": rng.get("preset")}, **res)
+    finally:
+        conn.close()
+
+
+@router.get(
+    "/assessment/roadmap",
+    tags=["Dashboard / Assessment & Maturity"],
+    summary="3-Horizon Transformation Roadmap",
+    description="Returns the 3-horizon milestone roadmap (0-60d Triage, 61-180d Standards, 181-360d Autonomous SRE).",
+)
+def assessment_roadmap(
+    preset: Optional[str] = Query("all", description=_PRE),
+    start_date: Optional[str] = Query(None, description=_SD),
+    end_date: Optional[str] = Query(None, description=_ED),
+    pipeline_name: Optional[str] = Query(None, description=_P),
+    pipeline_id: Optional[str] = Query(None, description=_PID),
+    tool: Optional[str] = Query(None, description=_TOOL),
+) -> dict[str, Any]:
+    from application.src.services.observability.assessment_engine import build_assessment_roadmap
+
+    pre = preset if isinstance(preset, str) else "all"
+    sd = start_date if isinstance(start_date, str) else None
+    ed = end_date if isinstance(end_date, str) else None
+    p_name = pipeline_name if isinstance(pipeline_name, str) else None
+    p_id = pipeline_id if isinstance(pipeline_id, str) else None
+    t_val = tool if isinstance(tool, str) else None
+
+    conn = _conn()
+    try:
+        rng = parse_range(pre, sd, ed)
+        filters = dict(pipeline_name=p_name, pipeline_id=p_id, tool=t_val)
+        res = build_assessment_roadmap(conn, rng, **filters)
+        return envelope(rng=rng, filters_applied={**filters, "preset": rng.get("preset")}, **res)
+    finally:
+        conn.close()
+
+
+# =============================================================================
+# DataOps Practice Diagnostic & Pipeline Reliability Assessment (Vithi Framework)
+# =============================================================================
+
+@router.get(
+    "/dataops/summary",
+    tags=["Dashboard / DataOps Maturity"],
+    summary="DataOps Maturity Summary & Reliability KPIs",
+    description="Returns live 1.0-5.0 DataOps maturity score, 8 reliability dimensions (D1-D8), and 5 quantified operational outcomes.",
+)
+def dataops_summary(
+    preset: Optional[str] = Query("all", description=_PRE),
+    start_date: Optional[str] = Query(None, description=_SD),
+    end_date: Optional[str] = Query(None, description=_ED),
+    pipeline_name: Optional[str] = Query(None, description=_P),
+    pipeline_id: Optional[str] = Query(None, description=_PID),
+    tool: Optional[str] = Query(None, description=_TOOL),
+) -> dict[str, Any]:
+    from application.src.services.dataops.dataops_engine import build_dataops_summary
+
+    pre = preset if isinstance(preset, str) else "all"
+    sd = start_date if isinstance(start_date, str) else None
+    ed = end_date if isinstance(end_date, str) else None
+    p_name = pipeline_name if isinstance(pipeline_name, str) else None
+    p_id = pipeline_id if isinstance(pipeline_id, str) else None
+    t_val = tool if isinstance(tool, str) else None
+
+    conn = _conn()
+    try:
+        rng = parse_range(pre, sd, ed)
+        filters = dict(pipeline_name=p_name, pipeline_id=p_id, tool=t_val)
+        res = build_dataops_summary(conn, rng, **filters)
+        return envelope(rng=rng, filters_applied={**filters, "preset": rng.get("preset")}, **res)
+    finally:
+        conn.close()
+
+
+@router.get(
+    "/dataops/scorecard",
+    tags=["Dashboard / DataOps Maturity"],
+    summary="DataOps 8-Dimension Audit Scorecard",
+    description="Returns detailed audit scorecard across 8 dimensions (D1 Orchestration to D8 FinOps) and 32 audit criteria mapped to DEV01-DEV12 evidence.",
+)
+def dataops_scorecard(
+    preset: Optional[str] = Query("all", description=_PRE),
+    start_date: Optional[str] = Query(None, description=_SD),
+    end_date: Optional[str] = Query(None, description=_ED),
+    pipeline_name: Optional[str] = Query(None, description=_P),
+    pipeline_id: Optional[str] = Query(None, description=_PID),
+    tool: Optional[str] = Query(None, description=_TOOL),
+) -> dict[str, Any]:
+    from application.src.services.dataops.dataops_engine import build_dataops_scorecard
+
+    pre = preset if isinstance(preset, str) else "all"
+    sd = start_date if isinstance(start_date, str) else None
+    ed = end_date if isinstance(end_date, str) else None
+    p_name = pipeline_name if isinstance(pipeline_name, str) else None
+    p_id = pipeline_id if isinstance(pipeline_id, str) else None
+    t_val = tool if isinstance(tool, str) else None
+
+    conn = _conn()
+    try:
+        rng = parse_range(pre, sd, ed)
+        filters = dict(pipeline_name=p_name, pipeline_id=p_id, tool=t_val)
+        res = build_dataops_scorecard(conn, rng, **filters)
+        return envelope(rng=rng, filters_applied={**filters, "preset": rng.get("preset")}, **res)
+    finally:
+        conn.close()
+
+
+@router.get(
+    "/dataops/outcomes",
+    tags=["Dashboard / DataOps Maturity"],
+    summary="DataOps Quantified Operational Outcomes",
+    description="Returns the 5 key operational outcomes: MTTR, Failure Rate, Defect Lag, Capacity Reclaimed, and SLA Delivery.",
+)
+def dataops_outcomes(
+    preset: Optional[str] = Query("all", description=_PRE),
+    start_date: Optional[str] = Query(None, description=_SD),
+    end_date: Optional[str] = Query(None, description=_ED),
+    pipeline_name: Optional[str] = Query(None, description=_P),
+    pipeline_id: Optional[str] = Query(None, description=_PID),
+    tool: Optional[str] = Query(None, description=_TOOL),
+) -> dict[str, Any]:
+    from application.src.services.dataops.dataops_engine import build_dataops_outcomes
+
+    pre = preset if isinstance(preset, str) else "all"
+    sd = start_date if isinstance(start_date, str) else None
+    ed = end_date if isinstance(end_date, str) else None
+    p_name = pipeline_name if isinstance(pipeline_name, str) else None
+    p_id = pipeline_id if isinstance(pipeline_id, str) else None
+    t_val = tool if isinstance(tool, str) else None
+
+    conn = _conn()
+    try:
+        rng = parse_range(pre, sd, ed)
+        filters = dict(pipeline_name=p_name, pipeline_id=p_id, tool=t_val)
+        res = build_dataops_outcomes(conn, rng, **filters)
+        return envelope(rng=rng, filters_applied={**filters, "preset": rng.get("preset")}, **res)
+    finally:
+        conn.close()
+
+
+@router.get(
+    "/dataops/roadmap",
+    tags=["Dashboard / DataOps Maturity"],
+    summary="DataOps 30/60/90-Day Stabilization Roadmap",
+    description="Returns phased stabilization deliverables: Phase 1 Triage (Days 0-30), Phase 2 Quality & Idempotency (Days 31-60), Phase 3 Governance & Scale (Days 61-90).",
+)
+def dataops_roadmap(
+    preset: Optional[str] = Query("all", description=_PRE),
+    start_date: Optional[str] = Query(None, description=_SD),
+    end_date: Optional[str] = Query(None, description=_ED),
+    pipeline_name: Optional[str] = Query(None, description=_P),
+    pipeline_id: Optional[str] = Query(None, description=_PID),
+    tool: Optional[str] = Query(None, description=_TOOL),
+) -> dict[str, Any]:
+    from application.src.services.dataops.dataops_engine import build_dataops_roadmap
+
+    pre = preset if isinstance(preset, str) else "all"
+    sd = start_date if isinstance(start_date, str) else None
+    ed = end_date if isinstance(end_date, str) else None
+    p_name = pipeline_name if isinstance(pipeline_name, str) else None
+    p_id = pipeline_id if isinstance(pipeline_id, str) else None
+    t_val = tool if isinstance(tool, str) else None
+
+    conn = _conn()
+    try:
+        rng = parse_range(pre, sd, ed)
+        filters = dict(pipeline_name=p_name, pipeline_id=p_id, tool=t_val)
+        res = build_dataops_roadmap(conn, rng, **filters)
+        return envelope(rng=rng, filters_applied={**filters, "preset": rng.get("preset")}, **res)
+    finally:
+        conn.close()
+
+

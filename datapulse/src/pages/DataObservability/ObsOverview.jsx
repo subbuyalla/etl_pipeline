@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  Clock, BarChart2, Shield, Layers, ChevronRight, AlertTriangle, CheckCircle, Network,
+  Clock, BarChart2, Shield, Layers, ChevronRight, AlertTriangle, CheckCircle, Network, Award,
 } from 'lucide-react';
 import {
   BarChart, Bar, AreaChart, Area,
@@ -134,6 +134,40 @@ export default function ObsOverview() {
                 </div>
               </div>
             )}
+
+            {/* Enterprise Observability Maturity Banner */}
+            <div
+              className="card interactive-card"
+              style={{
+                marginBottom: 16,
+                padding: '14px 18px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                background: 'linear-gradient(90deg, rgba(99, 102, 241, 0.07) 0%, rgba(16, 185, 129, 0.07) 100%)',
+                border: '1px solid var(--border)',
+                borderRadius: 8,
+                cursor: 'pointer',
+              }}
+              onClick={() => navigate('/observability/maturity')}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <div style={{ width: 34, height: 34, borderRadius: 8, background: '#EEF2FF', color: '#6366F1', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <Award size={20} />
+                </div>
+                <div>
+                  <div style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--text-primary)' }}>
+                    Enterprise Observability Maturity & ROI Matrix
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                    Audited from live pipeline telemetry across 12 capability domains · 9,600 hrs/yr capacity reclaimed
+                  </div>
+                </div>
+              </div>
+              <button type="button" className="btn btn-secondary btn-sm" style={{ pointerEvents: 'none' }}>
+                Open Scorecard <ChevronRight size={14} style={{ marginLeft: 4 }} />
+              </button>
+            </div>
 
             <div className="kpi-grid-5">
               {PILLARS.map(({ id, name, path, Icon, help }) => {

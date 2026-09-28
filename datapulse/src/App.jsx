@@ -18,6 +18,8 @@ import Metrics from './pages/Metrics';
 import Alerts from './pages/Alerts';
 import Logs from './pages/Logs';
 import Settings from './pages/Settings';
+import MaturityAssessment from './pages/MaturityAssessment';
+import DataOpsMaturity from './pages/DataOpsMaturity';
 
 export default function App() {
   return (
@@ -38,10 +40,14 @@ export default function App() {
               <Route path="/observability/data-quality" element={<DataQuality />} />
               <Route path="/observability/schema" element={<Schema />} />
               <Route path="/observability/lineage" element={<Lineage />} />
+              <Route path="/observability/maturity" element={<MaturityAssessment />} />
+              <Route path="/maturity" element={<Navigate to="/observability/maturity" replace />} />
               <Route path="/data-quality" element={<Navigate to="/observability/data-quality" replace />} />
               <Route path="/lineage" element={<Navigate to="/observability/lineage" replace />} />
               <Route path="/dataops/pipelines" element={<Navigate to="/pipelines" replace />} />
               <Route path="/dataops/integrations" element={<Navigate to="/integrations" replace />} />
+              <Route path="/dataops/maturity" element={<DataOpsMaturity />} />
+              <Route path="/dataops" element={<Navigate to="/dataops/maturity" replace />} />
               <Route path="/incidents" element={<Incidents />} />
               <Route path="/metrics" element={<Metrics />} />
               <Route path="/alerts" element={<Alerts />} />

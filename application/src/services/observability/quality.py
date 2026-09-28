@@ -745,7 +745,7 @@ def build_quality_page(
                 ),
                 "expected_value": obs.get("expected_value"),
                 "actual_value": obs.get("actual_value"),
-                "failure_count": obs.get("failure_count"),
+                "failure_count": obs.get("failure_count") or obs.get("failures") or obs.get("failures_count"),
                 "total_rows": obs.get("total_rows"),
                 "null_count": obs.get("null_count"),
                 "null_rate": obs.get("null_rate"),

@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   GitBranch, CheckCircle, Clock, AlertTriangle,
   ArrowUpRight, Search, RotateCcw, ChevronRight, Activity, Shield, Database,
-  Layers
+  Layers, Award
 } from 'lucide-react';
 import {
   BarChart, Bar, AreaChart, Area,
@@ -538,6 +538,39 @@ export default function Overview() {
                   {kpiMap.avg_duration?.delta_label || '—'}
                 </div>
               </div>
+            </div>
+
+            {/* Enterprise Observability Maturity Banner */}
+            <div
+              className="card interactive-card mt-4"
+              style={{
+                padding: '14px 20px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                background: 'linear-gradient(90deg, rgba(99, 102, 241, 0.08) 0%, rgba(16, 185, 129, 0.08) 100%)',
+                border: '1px solid var(--border)',
+                borderRadius: 8,
+                cursor: 'pointer',
+              }}
+              onClick={() => navigate('/observability/maturity')}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                <div style={{ width: 36, height: 36, borderRadius: 8, background: '#EEF2FF', color: '#6366F1', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <Award size={20} />
+                </div>
+                <div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)' }}>
+                    Enterprise Observability Maturity & ROI Matrix
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                    Audited from live pipeline telemetry across 12 capability domains · 9,600 hrs/yr capacity reclaimed
+                  </div>
+                </div>
+              </div>
+              <button type="button" className="btn btn-secondary btn-sm" style={{ pointerEvents: 'none' }}>
+                Open Maturity Scorecard <ChevronRight size={14} style={{ marginLeft: 4 }} />
+              </button>
             </div>
 
             {healthPillars.length > 0 && (

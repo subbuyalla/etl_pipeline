@@ -3,7 +3,7 @@ import {
   LayoutDashboard, GitBranch, Database, Network,
   AlertTriangle, BarChart2, Bell, FileText, Settings,
   Moon, Layers, PanelLeftClose, Clock, Shield, Activity,
-  SlidersHorizontal, ChevronDown, ChevronRight,
+  SlidersHorizontal, ChevronDown, ChevronRight, Award, ShieldCheck,
 } from 'lucide-react';
 import { useLayoutEffect, useState, useEffect } from 'react';
 import { useTheme } from '../context/ThemeContext';
@@ -12,11 +12,13 @@ import { useTheme } from '../context/ThemeContext';
 const DATAOPS_CHILDREN = [
   { icon: GitBranch, label: 'Pipelines', to: '/pipelines' },
   { icon: SlidersHorizontal, label: 'Integrations', to: '/integrations' },
+  { icon: ShieldCheck, label: 'DataOps Maturity', to: '/dataops/maturity' },
 ];
 
 // ── Data Observability (Monitoring, Telemetry & Quality Intelligence) ─────────
 const OBS_CHILDREN = [
   { icon: LayoutDashboard, label: 'Overview', to: '/observability' },
+  { icon: Award, label: 'Maturity & ROI', to: '/observability/maturity' },
   { icon: Database, label: 'Assets Catalog', to: '/observability/assets' },
   { icon: Clock, label: 'Freshness', to: '/observability/freshness' },
   { icon: Activity, label: 'Volume', to: '/observability/volume' },

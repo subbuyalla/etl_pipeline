@@ -64,9 +64,13 @@ def load_pipeline_freshness(
     as_of_params: list[Any] = []
     if as_of_dt is not None:
         as_of_clause = " AND COALESCE(r.end_time, r.start_time, r.created_at) <= %s"
-        as_of_params.append(as_of_dt.strftime("%Y-%m-%d %H:%M:%S"))
+        ts_s = as_of_dt.strftime("%Y-%m-%d %H:%M:%S")
+        as_of_params = [ts_s, ts_s, ts_s]
 
-    # Latest successful run per pipeline (optionally as-of range end)
+    # Decouple physical table freshness from orchestrator exit status:
+    # 1. target_last_updated_at reads the latest physical warehouse arrival timestamp (obs_run_assets)
+    # 2. last_success_run_time falls back to latest successful run if warehouse timestamp is omitted
+    # 3. latest_run captures current execution state
     sql = f"""
         SELECT
           p.pipeline_id,
@@ -75,22 +79,33 @@ def load_pipeline_freshness(
           p.etl_tool,
           p.target_tool,
           lr.id AS run_id,
-          lr.status AS latest_success_status,
+          lr.status AS latest_run_status,
           lr.end_time AS run_end_time,
           lr.start_time AS run_start_time,
           (
             SELECT MAX(a.last_updated_at)
             FROM obs_run_assets a
-            WHERE a.run_id = CAST(lr.id AS CHAR)
+            JOIN obs_pipeline_runs r ON a.run_id = CAST(r.id AS CHAR)
+            WHERE r.pipeline_id = p.pipeline_id
               AND UPPER(COALESCE(a.asset_role, '')) = 'TARGET'
-          ) AS target_last_updated_at
+              AND a.last_updated_at IS NOT NULL
+              {as_of_clause}
+          ) AS target_last_updated_at,
+          (
+            SELECT COALESCE(r.end_time, r.start_time, r.created_at)
+            FROM obs_pipeline_runs r
+            WHERE r.pipeline_id = p.pipeline_id
+              AND LOWER(COALESCE(r.status, '')) IN ('success', 'succeeded')
+              {as_of_clause}
+            ORDER BY COALESCE(r.end_time, r.start_time, r.created_at) DESC
+            LIMIT 1
+          ) AS last_success_run_time
         FROM obs_pipelines p
         LEFT JOIN obs_pipeline_runs lr
           ON lr.id = (
             SELECT r.id
             FROM obs_pipeline_runs r
             WHERE r.pipeline_id = p.pipeline_id
-              AND LOWER(COALESCE(r.status, '')) IN ('success', 'succeeded')
               {as_of_clause}
             ORDER BY COALESCE(r.end_time, r.start_time, r.created_at) DESC
             LIMIT 1
