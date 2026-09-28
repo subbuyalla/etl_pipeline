@@ -212,7 +212,7 @@ export default function DataOpsMaturity() {
               <span className="kpi-label">Recovery MTTR</span>
             </div>
             <div className="kpi-value" style={{ color: '#B45309', fontSize: 28 }}>
-              {outcomesData.mttr?.current || `${int(summary?.telemetry_counts?.mttr_minutes ?? 0)}m`}
+              {outcomesData.mttr?.current || `${Math.round(summary?.telemetry_counts?.mttr_minutes ?? 0)}m`}
             </div>
             <div style={{ marginTop: 6 }}>
               <span className={`status-pill ${(summary?.telemetry_counts?.mttr_minutes ?? 0) <= 45 ? 'good' : 'warning'}`}>
