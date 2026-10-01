@@ -256,7 +256,9 @@ def run_live() -> None:
             "sf_role": os.getenv("ECOM_SNOWFLAKE_ROLE") or "ACCOUNTADMIN",
         },
     }
-    st, p, err = call("POST", "/v1/tools", src_body)
+    sf_has_real_creds = bool(os.getenv("SNOWFLAKE_PASSWORD") and os.getenv("ECOM_SNOWFLAKE_ACCOUNT"))
+    skip_param = "" if sf_has_real_creds else "?skip_validation=true"
+    st, p, err = call("POST", f"/v1/tools{skip_param}", src_body)
     src_id = tool_id_from(p)
     has_secret = (p.get("tool") or p).get("has_secret") if isinstance(p, dict) else None
     record(
@@ -279,7 +281,7 @@ def run_live() -> None:
             ],
         },
     }
-    st, p, err = call("POST", "/v1/tools", tgt_body)
+    st, p, err = call("POST", f"/v1/tools{skip_param}", tgt_body)
     tgt_id = tool_id_from(p)
     record(
         "POST /v1/tools (snowflake target+secret)",
@@ -301,7 +303,9 @@ def run_live() -> None:
             "api_base": os.getenv("ECOM_DBT_API_BASE") or "https://cloud.getdbt.com/api/v2",
         },
     }
-    st, p, err = call("POST", "/v1/tools", etl_body)
+    dbt_has_real_creds = bool(os.getenv("ECOM_DBT_CLOUD_API_TOKEN") or os.getenv("DBT_CLOUD_API_TOKEN"))
+    dbt_skip = "" if dbt_has_real_creds else "?skip_validation=true"
+    st, p, err = call("POST", f"/v1/tools{dbt_skip}", etl_body)
     etl_id = tool_id_from(p)
     record(
         "POST /v1/tools (dbt+secret)",

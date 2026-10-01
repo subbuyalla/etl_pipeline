@@ -53,19 +53,53 @@ class PostgresConnector:
         self.cursor = self.connection.cursor()
 
     def test_connection(self) -> dict[str, Any]:
+        """test the connection to PostgreSQL and verify schema/database permissions"""
         try:
             self._connect()
-            self.cursor.execute("SELECT version()")
-            version = self.cursor.fetchone()
+            self.cursor.execute("SELECT version(), current_user, current_database()")
+            row = self.cursor.fetchone()
+            version = row[0] if row else None
+            user = row[1] if row and len(row) > 1 else None
+            db = row[2] if row and len(row) > 2 else None
+
+            permissions = {
+                "connection": True,
+                "database_access": True,
+                "schema_access": True,
+            }
+
+            if self.schema:
+                try:
+                    self.cursor.execute(
+                        "SELECT has_schema_privilege(current_user, %s, 'usage')",
+                        (self.schema,),
+                    )
+                    res = self.cursor.fetchone()
+                    if res and not res[0]:
+                        permissions["schema_access"] = False
+                        raise PermissionError(
+                            f"PostgreSQL user '{user}' lacks USAGE privilege on schema '{self.schema}'"
+                        )
+                except Exception as perm_err:
+                    permissions["schema_access"] = False
+                    raise PermissionError(
+                        f"PostgreSQL permission check failed for schema '{self.schema}': {perm_err}"
+                    )
+
             self.cursor.close()
             self.connection.close()
             return {
                 "ok": True,
-                "message": "Postgres connection OK",
-                "details": {"version": version[0] if version else None},
+                "message": "Postgres connection and permissions verified",
+                "details": {
+                    "version": version,
+                    "user": user,
+                    "database": db,
+                    "permissions": permissions,
+                },
             }
         except Exception as e:
-            return {"ok": False, "message": str(e)}
+            return {"ok": False, "message": str(e), "details": {"permissions": {"connection": False}}}
 
     def _fetch_tables(self) -> list[dict]:
         self._connect()

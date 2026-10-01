@@ -80,26 +80,37 @@ class AirbyteConnector:
     def test_connection(self) -> dict[str, Any]:
         try:
             if not self.base_url:
-                return {"ok": False, "message": "base_url is required"}
+                return {
+                    "ok": False,
+                    "message": "base_url is required",
+                    "details": {"permissions": {"api_health": False}},
+                }
             # Prefer health; fall back to list workspaces
+            health_data = {}
             try:
                 resp = requests.get(f"{self.base_url}/api/v1/health", timeout=30)
-                if resp.ok:
-                    return {
-                        "ok": True,
-                        "message": "Airbyte connection OK",
-                        "details": resp.json() if resp.content else {},
-                    }
+                if resp.ok and resp.content:
+                    health_data = resp.json()
             except Exception:
                 pass
+
             data = self._post("/api/v1/workspaces/list", {})
+            workspaces = data.get("workspaces") or []
+            permissions = {"api_health": True, "workspace_access": True}
+
+            if self.workspace_id:
+                found = any(w.get("workspaceId") == self.workspace_id for w in workspaces)
+                if not found and len(workspaces) > 0:
+                    permissions["workspace_access"] = False
+                    raise PermissionError(f"Airbyte workspace '{self.workspace_id}' not accessible with provided credentials")
+
             return {
                 "ok": True,
-                "message": "Airbyte connection OK",
-                "details": {"workspaces": len(data.get("workspaces") or [])},
+                "message": "Airbyte connection and permissions verified",
+                "details": {"workspaces": len(workspaces), "health": health_data, "permissions": permissions},
             }
         except Exception as e:
-            return {"ok": False, "message": str(e)}
+            return {"ok": False, "message": str(e), "details": {"permissions": {"api_health": False}}}
 
     def pull_state(self) -> list[dict]:
         """Recent job attempts as ETL-style envelopes."""

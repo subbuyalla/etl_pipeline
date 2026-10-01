@@ -100,3 +100,137 @@ def run_column_validation_on_connector(
         custom_sql=custom_sql,
         expected_max=expected_max,
     )
+
+
+def validate_tool_credentials_and_permissions(
+    *,
+    connector_type: str,
+    config: dict[str, Any] | None = None,
+    secret: str | None = None,
+    auth_ref: str | None = None,
+    tenant_id: str = "demo",
+) -> dict[str, Any]:
+    """
+    Validates connector credentials and verifies required permissions
+    before tool creation, without persisting anything to the database.
+    """
+    from application.src.connectors.registry import get_connector
+    from application.src.sync_once import connector_kwargs_from_tool
+
+    cfg = dict(config or {})
+    # Extract secret if nested in config
+    nested_secret = None
+    for k in ("password", "api_token", "token", "secret", "client_secret"):
+        if cfg.get(k) and not secret:
+            nested_secret = str(cfg[k])
+    effective_secret = secret if secret is not None else nested_secret
+
+    ctype = (connector_type or "").strip().lower()
+    synthetic_tool = {
+        "connector_type": ctype,
+        "config": cfg,
+        "auth_ref": auth_ref,
+    }
+
+    try:
+        kwargs = connector_kwargs_from_tool(synthetic_tool, tenant_id=tenant_id)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "authenticated": False,
+            "permissions_verified": False,
+            "message": f"Invalid connector configuration: {exc}",
+            "details": {
+                "config": {
+                    k: v
+                    for k, v in cfg.items()
+                    if k not in ("password", "api_token", "token", "secret", "client_secret")
+                }
+            },
+        }
+
+    # Inject secret into kwargs
+    if effective_secret:
+        if ctype in {
+            "snowflake",
+            "snowflake_lab",
+            "mysql",
+            "mysql_lab",
+            "postgres",
+            "postgresql",
+            "redshift",
+        }:
+            kwargs["password"] = effective_secret
+        elif ctype in {"dbt", "dbt_cloud"}:
+            kwargs["api_token"] = effective_secret
+        elif ctype == "airflow":
+            kwargs["password"] = effective_secret
+            kwargs["token"] = effective_secret
+        elif ctype == "airbyte":
+            kwargs["client_secret"] = effective_secret
+            kwargs["password"] = effective_secret
+        elif ctype in {"informatica", "iics", "idmc"}:
+            kwargs["password"] = effective_secret
+
+    try:
+        connector = get_connector(ctype, **kwargs)
+        result = connector.test_connection()
+    except Exception as exc:
+        return {
+            "ok": False,
+            "authenticated": False,
+            "permissions_verified": False,
+            "message": f"Connection test failed: {exc}",
+            "details": {"error": str(exc)},
+        }
+
+    if not isinstance(result, dict):
+        return {
+            "ok": False,
+            "authenticated": False,
+            "permissions_verified": False,
+            "message": "Connector returned invalid test response",
+            "details": {},
+        }
+
+    if not result.get("ok"):
+        details = result.get("details") or {}
+        perms = details.get("permissions") or {}
+        return {
+            "ok": False,
+            "authenticated": False,
+            "permissions_verified": False,
+            "message": result.get("message") or "Authentication failed",
+            "details": details,
+            "error_code": result.get("error_code"),
+            "error_hint": result.get("error_hint"),
+            "permissions": perms,
+        }
+
+    # If test passed, check permissions breakdown
+    details = result.get("details") or {}
+    perms = details.get("permissions") or {
+        "authentication": True,
+        "read_access": True,
+    }
+
+    missing = [k for k, v in perms.items() if not v]
+    if missing:
+        return {
+            "ok": False,
+            "authenticated": True,
+            "permissions_verified": False,
+            "message": f"Authenticated successfully, but missing required permissions: {', '.join(missing)}",
+            "details": details,
+            "permissions": perms,
+        }
+
+    return {
+        "ok": True,
+        "authenticated": True,
+        "permissions_verified": True,
+        "message": result.get("message") or "Credentials and permissions verified successfully",
+        "details": details,
+        "permissions": perms,
+    }
+

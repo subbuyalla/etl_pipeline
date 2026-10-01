@@ -57,15 +57,33 @@ class AirflowConnector:
     def test_connection(self) -> dict[str, Any]:
         try:
             if not self.base_url:
-                return {"ok": False, "message": "base_url is required"}
+                return {
+                    "ok": False,
+                    "message": "base_url is required",
+                    "details": {"permissions": {"api_health": False}},
+                }
             # Airflow 2+ health
             try:
                 data = self._get("/api/v1/health")
             except Exception:
                 data = self._get("/health")
-            return {"ok": True, "message": "Airflow connection OK", "details": data}
+
+            permissions = {"api_health": True, "dag_access": True}
+            if self.dag_id:
+                try:
+                    self._get(f"/api/v1/dags/{self.dag_id}")
+                    permissions["dag_access"] = True
+                except Exception as dag_err:
+                    permissions["dag_access"] = False
+                    raise PermissionError(f"Airflow user lacks permission to access DAG '{self.dag_id}': {dag_err}")
+
+            return {
+                "ok": True,
+                "message": "Airflow connection and permissions verified",
+                "details": {"health": data, "permissions": permissions},
+            }
         except Exception as e:
-            return {"ok": False, "message": str(e)}
+            return {"ok": False, "message": str(e), "details": {"permissions": {"api_health": False}}}
 
     def pull_state(self) -> list[dict]:
         """Recent DAG runs as ETL-style envelopes (compatible with map_run)."""

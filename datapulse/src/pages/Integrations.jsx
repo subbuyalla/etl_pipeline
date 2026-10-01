@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   Search, Eye, X, Plus, Copy, Check, ArrowRight, Star, Play,
-  Database, Layers, SlidersHorizontal,
+  Database, Layers, SlidersHorizontal, ShieldCheck, CheckCircle2, AlertCircle, Loader2,
 } from 'lucide-react';
 import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
@@ -14,6 +14,7 @@ import {
   fetchPipelineBindings,
   updateToolSecret,
   createTool,
+  validateToolCredentials,
   createPipelineFromTools,
   triggerSync,
 } from '../api/client';
@@ -394,6 +395,9 @@ export default function Integrations() {
   const [savingTool, setSavingTool] = useState(false);
   const [saveError, setSaveError] = useState(null);
   const [registerResult, setRegisterResult] = useState(null);
+  const [testingCreds, setTestingCreds] = useState(false);
+  const [credTestResult, setCredTestResult] = useState(null);
+  const [credTestError, setCredTestError] = useState(null);
 
   const [inspectTool, setInspectTool] = useState(null);
   const [inspectLoading, setInspectLoading] = useState(false);
@@ -757,6 +761,8 @@ export default function Integrations() {
     setAddOpen(true);
     setSaveError(null);
     setRegisterResult(null);
+    setCredTestResult(null);
+    setCredTestError(null);
     setConnectionName('');
     setFormValues({});
     const id = typeId || '';
@@ -767,15 +773,20 @@ export default function Integrations() {
   };
 
   const closeAdd = () => {
-    if (savingTool) return;
+    if (savingTool || testingCreds) return;
     setAddOpen(false);
     setRegisterResult(null);
     setSaveError(null);
+    setCredTestResult(null);
+    setCredTestError(null);
   };
 
   const applyConnectorChange = (id) => {
     setConnectTypeId(id);
     setFormValues({});
+    setCredTestResult(null);
+    setCredTestError(null);
+    setSaveError(null);
     const next = connectorTypes.find((t) => t.id === id);
     setConnectionRole(defaultRoleForConnector(next));
   };
@@ -836,6 +847,62 @@ export default function Integrations() {
     };
   }, [directoryEntries]);
 
+  const buildToolPayload = () => {
+    if (!selectedType) return null;
+    const fields = fieldsForType(selectedType.id);
+    const config = { role: connectionRole };
+    let secret = null;
+    fields.forEach((field) => {
+      const raw = formValues[field.key];
+      if (raw == null || String(raw).trim() === '') return;
+      if (SECRET_KEYS.has(field.key) || field.type === 'password') {
+        secret = String(raw);
+        return;
+      }
+      if (field.key === 'tables') {
+        config.tables = String(raw).split(',').map((s) => s.trim()).filter(Boolean);
+      } else {
+        config[field.key] = String(raw).trim();
+      }
+    });
+    return {
+      name: connectionName.trim() || `${selectedType.id}-draft`,
+      connector_type: selectedType.id,
+      kind: selectedType.kind || undefined,
+      secret: secret || undefined,
+      config,
+    };
+  };
+
+  const handleTestCredentials = async () => {
+    if (!selectedType) return;
+    const payload = buildToolPayload();
+    if (!payload) return;
+
+    setTestingCreds(true);
+    setCredTestError(null);
+    setCredTestResult(null);
+    setSaveError(null);
+    try {
+      const res = await validateToolCredentials(payload);
+      if (res?.ok) {
+        setCredTestResult(res);
+      } else {
+        const msg = res?.message || 'Credential or permission test failed';
+        setCredTestError(msg);
+        setCredTestResult(res);
+      }
+    } catch (err) {
+      const detail = err?.response?.data?.detail;
+      const msg = typeof detail === 'string'
+        ? detail
+        : (detail?.message || err?.response?.data?.message || err?.message || 'Connection test failed');
+      setCredTestError(msg);
+    } finally {
+      setTestingCreds(false);
+    }
+  };
+
   const handleSaveTool = async (e) => {
     e.preventDefault();
     if (!selectedType) return;
@@ -850,47 +917,34 @@ export default function Integrations() {
     setSavingTool(true);
     setSaveError(null);
     try {
-      const fields = fieldsForType(selectedType.id);
-      const config = { role: connectionRole };
-      let secret = null;
-      fields.forEach((field) => {
-        const raw = formValues[field.key];
-        if (raw == null || String(raw).trim() === '') return;
-        if (SECRET_KEYS.has(field.key) || field.type === 'password') {
-          secret = String(raw);
-          return;
-        }
-        if (field.key === 'tables') {
-          config.tables = String(raw).split(',').map((s) => s.trim()).filter(Boolean);
-        } else {
-          config[field.key] = String(raw).trim();
-        }
-      });
-      const res = await createTool({
-        name: connectionName.trim(),
-        connector_type: selectedType.id,
-        kind: selectedType.kind || undefined,
-        secret: secret || undefined,
-        config,
-      });
+      const payload = buildToolPayload();
+      payload.name = trimmedName;
+
+      // createTool validates credentials and permissions on backend
+      const res = await createTool(payload);
       const tid = extractToolId(res);
       const cid = res?.connection_id || res?.item?.connection_id || res?.tool?.connection_id || '';
       setRegisterResult({
         raw: res,
         tool_id: tid,
         connection_id: cid,
-        name: connectionName.trim(),
+        name: trimmedName,
         connector_type: selectedType.id,
         kind: selectedType.kind || res?.kind || '',
         role: connectionRole,
         status: res?.status || res?.item?.status || 'active',
+        verified: true,
       });
       setActionMsg(tid
-        ? `Registered “${connectionName.trim()}” · tool_id ${String(tid).slice(0, 8)}…`
-        : `Registered “${connectionName.trim()}”.`);
+        ? `Registered “${trimmedName}” · credentials & permissions verified · tool_id ${String(tid).slice(0, 8)}…`
+        : `Registered “${trimmedName}” · credentials & permissions verified.`);
       await loadData();
     } catch (err) {
-      setSaveError(err?.response?.data?.detail || err?.response?.data?.error || err.message || 'Failed');
+      const detail = err?.response?.data?.detail;
+      const msg = typeof detail === 'string'
+        ? detail
+        : (detail?.message || err?.response?.data?.message || err?.message || 'Failed to create connection');
+      setSaveError(msg);
     } finally {
       setSavingTool(false);
     }
@@ -1471,12 +1525,19 @@ export default function Integrations() {
 
               {registerResult ? (
                 <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-                  <div className="int-banner is-ok" style={{ margin: 0 }}>
-                    Registered <strong>{registerResult.name}</strong>
-                    {' · '}
-                    {labelForType(registerResult.connector_type)}
-                    {' · '}
-                    {roleLabel(registerResult.role)}
+                  <div className="int-banner is-ok" style={{ margin: 0, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+                    <div>
+                      Registered <strong>{registerResult.name}</strong>
+                      {' · '}
+                      {labelForType(registerResult.connector_type)}
+                      {' · '}
+                      {roleLabel(registerResult.role)}
+                    </div>
+                    {registerResult.verified && (
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: '#DCFCE7', color: '#166534', padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 700 }}>
+                        <CheckCircle2 size={12} /> Credentials &amp; Permissions Verified
+                      </span>
+                    )}
                   </div>
 
                   <div className="int-register-result">
@@ -1543,6 +1604,46 @@ export default function Integrations() {
                   {saveError && (
                     <div className="int-banner is-error">
                       {typeof saveError === 'string' ? saveError : JSON.stringify(saveError)}
+                    </div>
+                  )}
+
+                  {testingCreds && (
+                    <div className="int-banner is-warn" style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '8px 0' }}>
+                      <LoadingSpinner size={13} inline />
+                      <span>Verifying credentials &amp; checking permissions on remote endpoint…</span>
+                    </div>
+                  )}
+
+                  {credTestResult?.ok && (
+                    <div className="int-banner is-ok" style={{ display: 'flex', flexDirection: 'column', gap: 6, margin: '8px 0', border: '1px solid #A7F3D0' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 700, color: '#065F46' }}>
+                        <CheckCircle2 size={16} color="#059669" />
+                        Credentials &amp; Permissions Verified Successfully
+                      </div>
+                      <div style={{ fontSize: 12, color: '#065F46' }}>
+                        {credTestResult.message || 'Remote authentication succeeded with required access privileges.'}
+                      </div>
+                      {credTestResult.permissions && (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>
+                          {Object.entries(credTestResult.permissions).map(([perm, status]) => (
+                            <span key={perm} style={{ fontSize: 11, background: '#DCFCE7', color: '#166534', padding: '2px 8px', borderRadius: 4, fontWeight: 600 }}>
+                              ✓ {perm.replace(/_/g, ' ')}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {credTestError && (
+                    <div className="int-banner is-error" style={{ display: 'flex', flexDirection: 'column', gap: 6, margin: '8px 0', border: '1px solid #FECACA' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 700, color: '#991B1B' }}>
+                        <AlertCircle size={16} color="#DC2626" />
+                        Verification Failed: Invalid Credentials or Missing Permissions
+                      </div>
+                      <div style={{ fontSize: 12, color: '#991B1B', wordBreak: 'break-word' }}>
+                        {credTestError}
+                      </div>
                     </div>
                   )}
 
@@ -1640,13 +1741,23 @@ export default function Integrations() {
                   ))}
 
                   <div className="int-form-actions">
-                    <button type="button" className="export-btn" disabled={savingTool} onClick={closeAdd}>Cancel</button>
+                    <button type="button" className="export-btn" disabled={savingTool || testingCreds} onClick={closeAdd}>Cancel</button>
+                    <button
+                      type="button"
+                      className="export-btn"
+                      disabled={testingCreds || savingTool || !selectedType}
+                      onClick={handleTestCredentials}
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                    >
+                      {testingCreds ? <LoadingSpinner size={12} inline /> : <ShieldCheck size={14} color="#0284C7" />}
+                      {testingCreds ? 'Testing…' : 'Test Connection'}
+                    </button>
                     <button
                       type="submit"
                       className="int-primary-btn"
-                      disabled={savingTool || !connectionName.trim() || !selectedType}
+                      disabled={savingTool || testingCreds || !connectionName.trim() || !selectedType}
                     >
-                      {savingTool ? 'Saving…' : 'Register tool'}
+                      {savingTool ? 'Validating & Saving…' : 'Register tool'}
                     </button>
                   </div>
                 </form>

@@ -46,20 +46,43 @@ class MysqlConnector:
         self.cursor = self.connection.cursor()
 
     def test_connection(self) -> dict:
-        """test the connection to MySQL"""
+        """test the connection to MySQL and verify database permissions"""
         try:
             self._connect()
-            self.cursor.execute("SELECT VERSION()")
-            version = self.cursor.fetchone()
+            self.cursor.execute("SELECT VERSION(), CURRENT_USER(), DATABASE()")
+            row = self.cursor.fetchone()
+            version = row[0] if row else None
+            user = row[1] if row and len(row) > 1 else None
+            active_db = row[2] if row and len(row) > 2 else None
+
+            permissions = {
+                "connection": True,
+                "database_access": True,
+            }
+
+            if self.database:
+                try:
+                    self.cursor.execute(f"SHOW TABLES IN `{self.database}`")
+                    self.cursor.fetchall()
+                    permissions["database_access"] = True
+                except Exception as perm_err:
+                    permissions["database_access"] = False
+                    raise PermissionError(f"MySQL permission denied for database '{self.database}': {perm_err}")
+
             self.cursor.close()
             self.connection.close()
             return {
                 "ok": True,
-                "message": "MySQL connection OK",
-                "details": {"version": version[0] if version else None},
+                "message": "MySQL connection and permissions verified",
+                "details": {
+                    "version": version,
+                    "user": user,
+                    "database": active_db or self.database,
+                    "permissions": permissions,
+                },
             }
         except Exception as e:
-            return {"ok": False, "message": str(e)}
+            return {"ok": False, "message": str(e), "details": {"permissions": {"connection": False}}}
 
     def get_databases(self) -> dict:
         """get the databases from MySQL"""

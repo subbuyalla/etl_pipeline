@@ -106,19 +106,36 @@ class DbtConnector:
             raise RuntimeError(f"dbt Cloud unreachable: {e}") from e
 
     def test_connection(self) -> dict:
-        """Test: can we reach this dbt Cloud account?"""
+        """Test: can we reach this dbt Cloud account and verify permissions?"""
         try:
             if not self.account_id:
-                return {"ok": False, "message": "account_id is required"}
+                return {
+                    "ok": False,
+                    "message": "account_id is required",
+                    "details": {"permissions": {"account_access": False}},
+                }
             data = self._get(f"/accounts/{self.account_id}/")
             name = (data.get("data") or {}).get("name")
+            permissions = {
+                "api_access": True,
+                "account_access": True,
+            }
+
+            if self.job_id:
+                try:
+                    self._get(f"/accounts/{self.account_id}/jobs/{self.job_id}/")
+                    permissions["job_access"] = True
+                except Exception as j_err:
+                    permissions["job_access"] = False
+                    raise PermissionError(f"dbt Cloud token lacks permission to access job '{self.job_id}': {j_err}")
+
             return {
                 "ok": True,
-                "message": "dbt Cloud connection OK",
-                "details": {"account": name},
+                "message": "dbt Cloud connection and permissions verified",
+                "details": {"account": name, "permissions": permissions},
             }
         except Exception as e:
-            return {"ok": False, "message": str(e)}
+            return {"ok": False, "message": str(e), "details": {"permissions": {"api_access": False}}}
 
     def _get_optional(self, path: str) -> dict | None:
         """GET that returns None on 404/errors (artifacts are often missing)."""

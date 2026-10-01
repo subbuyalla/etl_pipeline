@@ -256,20 +256,31 @@ class InformaticaConnector:
 
             return {
                 "ok": True,
-                "message": "Informatica IICS connection successful",
+                "message": "Informatica IICS connection and permissions verified",
                 "details": {
                     "pod_url": self.pod_url,
                     "server_url": self._server_url,
                     "org_id": self._org_id_retrieved or self.org_id or "default",
                     "org_name": self._org_name or "Informatica Org",
                     "tasks_accessible": entries_count >= 0,
+                    "permissions": {
+                        "authentication": True,
+                        "session_active": True,
+                        "activity_log_read": True,
+                    },
                 },
             }
         except Exception as e:
             return {
                 "ok": False,
                 "message": f"Informatica connection failed: {str(e)}",
-                "details": {"pod_url": self.pod_url},
+                "details": {
+                    "pod_url": self.pod_url,
+                    "permissions": {
+                        "authentication": False,
+                        "activity_log_read": False,
+                    },
+                },
             }
 
     def pull_state(self, limit: int = 50) -> list[dict[str, Any]]:

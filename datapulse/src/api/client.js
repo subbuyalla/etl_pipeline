@@ -208,8 +208,11 @@ export const fetchConnectorTypes = () =>
 export const testToolConnection = (toolId) =>
   api.post(`/v1/tools/${toolId}/test`).then(r => r.data);
 
-export const createTool = (payload) =>
-  api.post('/v1/tools', payload).then(r => { clearClientCache(); return r.data; });
+export const validateToolCredentials = (payload) =>
+  api.post('/v1/tools/test-credentials', payload).then(r => r.data);
+
+export const createTool = (payload, skipValidation = false) =>
+  api.post(`/v1/tools${skipValidation ? '?skip_validation=true' : ''}`, payload).then(r => { clearClientCache(); return r.data; });
 
 export const updateToolSecret = (toolId, payload) =>
   api.put(`/v1/tools/${toolId}/secret`, payload).then(r => { clearClientCache(); return r.data; });

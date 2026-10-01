@@ -682,16 +682,57 @@ def tools_get(tool_id: str) -> dict:
 
 
 @app.post(
+    "/v1/tools/test-credentials",
+    tags=["1. Tools"],
+    summary="Test tool credentials and permissions before creation",
+    description="Validates credentials and confirms permissions without persisting any tool to the database.",
+)
+def tools_test_credentials(body: CreateToolRequest) -> dict:
+    from application.src.connectors.validation import validate_tool_credentials_and_permissions
+
+    return validate_tool_credentials_and_permissions(
+        connector_type=body.connector_type,
+        config=body.config,
+        secret=body.secret,
+        auth_ref=body.auth_ref,
+        tenant_id=body.tenant_id or "demo",
+    )
+
+
+@app.post(
     "/v1/tools",
     tags=["1. Tools"],
     summary="Create or update tool",
     description=(
         "Register a reusable database or ETL tool. "
+        "Validates credentials and permissions first (bypass with `skip_validation=true`). "
         "Pass `secret` (password/token); it is Fernet-encrypted into `obs_secrets`. "
         "Plaintext is never stored in config_json or returned by GET."
     ),
 )
-def tools_create(body: CreateToolRequest) -> dict:
+def tools_create(
+    body: CreateToolRequest,
+    skip_validation: bool = Query(
+        default=False,
+        description="Set to true to skip credential and permission validation",
+    ),
+) -> dict:
+    if not skip_validation:
+        from application.src.connectors.validation import validate_tool_credentials_and_permissions
+
+        val_res = validate_tool_credentials_and_permissions(
+            connector_type=body.connector_type,
+            config=body.config,
+            secret=body.secret,
+            auth_ref=body.auth_ref,
+            tenant_id=body.tenant_id or "demo",
+        )
+        if not val_res.get("ok"):
+            err_msg = val_res.get("message") or "Connection or permission test failed."
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot create tool: {err_msg} Please verify credentials and grant all required permissions before registering.",
+            )
     try:
         return create_or_update_tool(
             name=body.name,

@@ -54,17 +54,52 @@ class SnowflakeConnector:
         self.cursor = self.connection.cursor()
 
     def test_connection(self) -> dict:
-        """test the connection to snowflake"""
+        """test the connection to snowflake and verify required permissions"""
         try:
             self._connect()
-            self.cursor.execute("SELECT CURRENT_VERSION()")  # or SELECT 1
-            version = self.cursor.fetchone()
+            self.cursor.execute("SELECT CURRENT_VERSION(), CURRENT_ROLE(), CURRENT_WAREHOUSE(), CURRENT_DATABASE()")
+            row = self.cursor.fetchone()
+            version = row[0] if row else None
+            role = row[1] if row and len(row) > 1 else None
+            wh = row[2] if row and len(row) > 2 else None
+            curr_db = row[3] if row and len(row) > 3 else None
+
+            permissions = {
+                "connection": True,
+                "role_active": bool(role),
+                "warehouse_active": bool(wh or self.warehouse_id),
+                "database_accessible": True,
+            }
+
+            if self.warehouse_id and not wh:
+                try:
+                    self.cursor.execute(f'USE WAREHOUSE "{self.warehouse_id}"')
+                    permissions["warehouse_active"] = True
+                except Exception as wh_err:
+                    permissions["warehouse_active"] = False
+                    raise PermissionError(f"Snowflake warehouse permission denied for '{self.warehouse_id}': {wh_err}")
+
+            target_db = self.database_id or curr_db
+            if target_db:
+                try:
+                    self.cursor.execute(f'USE DATABASE "{target_db}"')
+                    permissions["database_accessible"] = True
+                except Exception as db_err:
+                    permissions["database_accessible"] = False
+                    raise PermissionError(f"Snowflake database permission denied for '{target_db}': {db_err}")
+
             self.cursor.close()
             self.connection.close()
             return {
                 "ok": True,
-                "message": "Snowflake connection OK",
-                "details": {"version": version},
+                "message": "Snowflake connection and permissions verified",
+                "details": {
+                    "version": version,
+                    "role": role,
+                    "warehouse": wh or self.warehouse_id,
+                    "database": target_db,
+                    "permissions": permissions,
+                },
             }
         except Exception as e:
             from application.src.connectors.errors import classify_snowflake_error
@@ -75,6 +110,7 @@ class SnowflakeConnector:
                 "message": str(e),
                 "error_code": err["error_code"],
                 "error_hint": err["error_hint"],
+                "details": {"permissions": {"connection": False}},
             }
 
     def get_databases(self):
