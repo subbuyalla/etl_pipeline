@@ -16,6 +16,7 @@ def list_connector_types() -> list[dict[str, str]]:
         {"id": "dbt_cloud", "kind": "etl", "label": "dbt Cloud"},
         {"id": "airbyte", "kind": "etl", "label": "Airbyte"},
         {"id": "airflow", "kind": "orchestrator", "label": "Apache Airflow"},
+        {"id": "informatica", "kind": "etl", "label": "Informatica (IICS / IDMC)"},
     ]
 
 
@@ -57,4 +58,8 @@ def get_connector(connector_type: str, **kwargs: Any) -> Any:
         from application.src.connectors.airflow import AirflowConnector
 
         return AirflowConnector(**kwargs)
+    if key in {"informatica", "iics", "idmc"}:
+        from application.src.connectors.informatica import InformaticaConnector
+
+        return InformaticaConnector(**kwargs)
     raise ValueError(f"Unknown connector_type={connector_type!r}")

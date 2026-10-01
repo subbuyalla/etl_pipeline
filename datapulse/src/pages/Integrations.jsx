@@ -98,6 +98,12 @@ const CONNECTOR_META = {
     category: 'etl',
     desc: 'Workflow orchestration & scheduling.',
   },
+  informatica: {
+    label: 'Informatica (IICS / IDMC)',
+    color: '#FF4D00',
+    category: 'etl',
+    desc: 'Cloud Data Integration (CDI), Taskflows & Data Quality.',
+  },
 };
 
 const DIR_SECTIONS = [
@@ -198,6 +204,14 @@ const FORM_SCHEMAS = {
     { key: 'dag_id', label: 'DAG ID', required: true },
     { key: 'user_id', label: 'Username', required: true },
     { key: 'secret', label: 'Password / Token', type: 'password', required: true },
+  ],
+  informatica: [
+    { key: 'pod_url', label: 'POD Region / Base URL', required: true, placeholder: 'dm-us (or https://dm-us.informaticacloud.com)' },
+    { key: 'username', label: 'Username / Service Email', required: true, placeholder: 'svc_datapulse@company.com' },
+    { key: 'secret', label: 'Password', type: 'password', required: true },
+    { key: 'org_id', label: 'Organization ID (Optional)', required: false, placeholder: 'Auto-discovered from login' },
+    { key: 'task_type', label: 'Task Type Filter', required: false, placeholder: 'MTT (Mapping Tasks), TASKFLOW, or ALL' },
+    { key: 'task_filter', label: 'Task Name Filter (Optional)', required: false, placeholder: 'e.g. mtt_orders or leave empty' },
   ],
 };
 

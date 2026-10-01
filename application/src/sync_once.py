@@ -432,6 +432,19 @@ def connector_kwargs_from_tool(tool: dict, *, tenant_id: str) -> dict[str, Any]:
             "connection_id": cfg.get("connection_id") or "",
             "workspace_id": cfg.get("workspace_id") or "",
         }
+    if ctype in {"informatica", "iics", "idmc"}:
+        return {
+            **base,
+            "pod_url": cfg.get("pod_url") or cfg.get("base_url") or "dm-us",
+            "username": cfg.get("username") or cfg.get("user_id") or os.getenv("INFORMATICA_USERNAME"),
+            "password": db_secret
+            or _resolve_db_password(
+                {**cfg, "password_env": tool.get("auth_ref") or "INFORMATICA_PASSWORD"}
+            ),
+            "org_id": cfg.get("org_id") or os.getenv("INFORMATICA_ORG_ID") or "",
+            "task_type": cfg.get("task_type") or "MTT",
+            "task_filter": cfg.get("task_filter") or "",
+        }
     raise ValueError(f"Unsupported connector_type={ctype!r}")
 
 

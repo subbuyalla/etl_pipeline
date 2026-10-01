@@ -8,6 +8,8 @@ const FALLBACK = {
   mysql: '#4479A1',
   airbyte: '#615EFF',
   airflow: '#017CEE',
+  informatica: '#FF4D00',
+  iics: '#FF4D00',
 };
 
 const CONNECTOR_MONO = {
@@ -20,6 +22,8 @@ const CONNECTOR_MONO = {
   mysql: 'MY',
   airbyte: 'AB',
   airflow: 'AF',
+  informatica: 'INFA',
+  iics: 'INFA',
 };
 
 /** Bust browser cache after logo SVG replacements */
