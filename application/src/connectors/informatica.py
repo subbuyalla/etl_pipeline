@@ -181,14 +181,18 @@ class InformaticaConnector:
             )
             if not server_url and isinstance(data.get("products"), list):
                 for prod in data["products"]:
-                    if isinstance(prod, dict) and prod.get("serviceUrl"):
-                        server_url = prod["serviceUrl"]
-                        break
+                    if isinstance(prod, dict):
+                        found_url = prod.get("baseApiUrl") or prod.get("serviceUrl") or prod.get("serverUrl")
+                        if found_url:
+                            server_url = found_url
+                            break
             if not server_url and isinstance(user_info.get("products"), list):
                 for prod in user_info["products"]:
-                    if isinstance(prod, dict) and prod.get("serviceUrl"):
-                        server_url = prod["serviceUrl"]
-                        break
+                    if isinstance(prod, dict):
+                        found_url = prod.get("baseApiUrl") or prod.get("serviceUrl") or prod.get("serverUrl")
+                        if found_url:
+                            server_url = found_url
+                            break
 
             # Retain serverUrl for all subsequent calls (e.g. https://apse1.dm-ap.informaticacloud.com/saas)
             self._server_url = str(server_url).rstrip("/") if server_url else self.pod_url
