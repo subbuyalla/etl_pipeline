@@ -171,10 +171,27 @@ class InformaticaConnector:
             # v3 response structure
             user_info = data.get("userInfo") or {}
             self._session_id = data.get("sessionId") or user_info.get("sessionId")
-            # baseApiUrl points to specific regional server (e.g. https://na1.dm-us.informaticacloud.com/saas)
-            base_api = data.get("baseApiUrl") or ""
-            # Strip trailing /saas if present for API v2/v3 root access
-            self._server_url = re.sub(r"/saas/?$", "", base_api) if base_api else self.pod_url
+
+            # Extract Address 2 (serverUrl) where IICS data and logs live
+            server_url = (
+                data.get("serverUrl")
+                or data.get("baseApiUrl")
+                or user_info.get("serverUrl")
+                or user_info.get("baseApiUrl")
+            )
+            if not server_url and isinstance(data.get("products"), list):
+                for prod in data["products"]:
+                    if isinstance(prod, dict) and prod.get("serviceUrl"):
+                        server_url = prod["serviceUrl"]
+                        break
+            if not server_url and isinstance(user_info.get("products"), list):
+                for prod in user_info["products"]:
+                    if isinstance(prod, dict) and prod.get("serviceUrl"):
+                        server_url = prod["serviceUrl"]
+                        break
+
+            # Retain serverUrl for all subsequent calls (e.g. https://apse1.dm-ap.informaticacloud.com/saas)
+            self._server_url = str(server_url).rstrip("/") if server_url else self.pod_url
             self._org_name = user_info.get("orgName") or data.get("orgName")
             self._org_id_retrieved = user_info.get("orgId") or self.org_id
             return
@@ -190,8 +207,9 @@ class InformaticaConnector:
             v2_resp = requests.post(v2_url, json=v2_payload, headers={"Content-Type": "application/json", "Accept": "application/json"}, timeout=self.timeout)
             if v2_resp.status_code == 200:
                 v2_data = v2_resp.json() if v2_resp.content else {}
-                self._session_id = v2_data.get("icSessionId")
-                self._server_url = (v2_data.get("serverUrl") or self.pod_url).rstrip("/")
+                self._session_id = v2_data.get("icSessionId") or v2_data.get("sessionId")
+                server_url = v2_data.get("serverUrl") or v2_data.get("baseApiUrl")
+                self._server_url = str(server_url).rstrip("/") if server_url else self.pod_url
                 self._org_name = v2_data.get("orgName")
                 self._org_id_retrieved = v2_data.get("orgId") or self.org_id
                 return
@@ -210,14 +228,27 @@ class InformaticaConnector:
             raise RuntimeError(f"Informatica authentication failed: Invalid username or password ({err_text})")
         raise RuntimeError(f"Informatica login error ({resp.status_code}): {err_text}")
 
+    def _resolve_url(self, path: str) -> str:
+        """Resolves endpoint path against serverUrl (Address 2) with proper /saas prefixing."""
+        if path.startswith("http://") or path.startswith("https://"):
+            return path
+        base = (self._server_url or self.pod_url).rstrip("/")
+        clean_path = "/" + path.lstrip("/")
+        # If base ends with /saas and path starts with /saas, avoid duplication
+        if base.endswith("/saas") and clean_path.startswith("/saas/"):
+            clean_path = clean_path[5:]
+        # If base does NOT end with /saas and path starts with /api/v2, append /saas
+        elif not base.endswith("/saas") and clean_path.startswith("/api/v2/"):
+            clean_path = f"/saas{clean_path}"
+        return f"{base}{clean_path}"
+
     def _request(self, method: str, path: str, *, params: dict | None = None, json_body: dict | None = None) -> Any:
         """
-        Executes an authenticated request against Informatica serverUrl.
+        Executes an authenticated request against Informatica serverUrl (Address 2).
         Automatically re-authenticates and retries on HTTP 401 session expiry.
         """
         self._login()
-        base = (self._server_url or self.pod_url).rstrip("/")
-        url = path if path.startswith("http") else f"{base}{path}"
+        url = self._resolve_url(path)
 
         resp = requests.request(
             method,
@@ -231,6 +262,7 @@ class InformaticaConnector:
         # Handle session expiration (IICS tokens expire after 30 mins)
         if resp.status_code in (401, 403):
             self._login(force=True)
+            url = self._resolve_url(path)
             resp = requests.request(
                 method,
                 url,
@@ -250,7 +282,7 @@ class InformaticaConnector:
         try:
             self._login(force=True)
 
-            # Test querying activityLog with limit 1 to verify user role permissions
+            # Test querying activityLog with limit 1 to verify user role permissions against serverUrl
             test_resp = self._request("GET", "/api/v2/activity/activityLog", params={"rowLimit": 1})
             entries_count = len(test_resp) if isinstance(test_resp, list) else 0
 
@@ -276,8 +308,9 @@ class InformaticaConnector:
                 "message": f"Informatica connection failed: {str(e)}",
                 "details": {
                     "pod_url": self.pod_url,
+                    "server_url": self._server_url,
                     "permissions": {
-                        "authentication": False,
+                        "authentication": bool(self._session_id),
                         "activity_log_read": False,
                     },
                 },
