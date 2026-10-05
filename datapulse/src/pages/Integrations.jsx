@@ -1388,7 +1388,7 @@ export default function Integrations() {
               </form>
               {(syncing || lastSyncResult) && (
                 <p className={`int-sync-msg${lastSyncResult ? (lastSyncResult.ok ? ' is-ok' : ' is-fail') : ''}`}>
-                  {syncing && !lastSyncResult ? 'Sync in progress…' : (lastSyncResult?.message || '')}
+                  {syncing && !lastSyncResult ? 'Sync in progress — connecting to remote orchestrator & cloud databases (~30–60s)…' : (lastSyncResult?.message || '')}
                 </p>
               )}
             </section>

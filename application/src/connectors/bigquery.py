@@ -98,6 +98,40 @@ class BigQueryConnector:
                 )
         return envelopes
 
+    def fetch_columns(self, tables: list[str] | None = None) -> list[dict]:
+        """
+        Pull column metadata for tables in this project/dataset.
+        Returns rows: database, schema, table, column_name, data_type, ordinal_position.
+        """
+        client = self._client()
+        names = [
+            str(t).strip().upper()
+            for t in (tables if tables is not None else self.tables)
+            if str(t).strip()
+        ]
+        datasets = [self.dataset] if self.dataset else [d.dataset_id for d in client.list_datasets()]
+        rows: list[dict] = []
+
+        for ds_id in datasets:
+            for table_ref in client.list_tables(f"{self.project_id}.{ds_id}"):
+                table_name = table_ref.table_id
+                if names and table_name.upper() not in names:
+                    continue
+                full_table = client.get_table(table_ref)
+                for idx, field in enumerate(full_table.schema):
+                    rows.append(
+                        {
+                            "database": self.project_id,
+                            "schema": ds_id,
+                            "table": table_name,
+                            "column_name": field.name,
+                            "data_type": field.field_type,
+                            "ordinal_position": idx + 1,
+                            "dataset_id": f"{self.project_id}.{ds_id}.{table_name}",
+                        }
+                    )
+        return rows
+
     def run_column_validation(
         self,
         *,

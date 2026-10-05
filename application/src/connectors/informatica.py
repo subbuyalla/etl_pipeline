@@ -62,6 +62,13 @@ def normalize_pod_url(pod_or_url: str) -> str:
     if key in shortcuts:
         return shortcuts[key]
 
+    if "dm-ap.informaticacloud.com" in key:
+        return "https://dm-ap.informaticacloud.com"
+    if "dm-em.informaticacloud.com" in key:
+        return "https://dm-em.informaticacloud.com"
+    if "dm-us.informaticacloud.com" in key:
+        return "https://dm-us.informaticacloud.com"
+
     if not raw.startswith("http://") and not raw.startswith("https://"):
         raw = f"https://{raw}"
 

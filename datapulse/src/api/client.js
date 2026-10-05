@@ -229,7 +229,7 @@ export const fetchCurrentPipeline = () =>
 
 // ── Operations & Triggers ────────────────────────────────────────────────────
 export const triggerSync = (payload = {}) =>
-  api.post('/v1/sync', payload).then(r => { clearClientCache(); return r.data; });
+  api.post('/v1/sync', payload, { timeout: 180000 }).then(r => { clearClientCache(); return r.data; });
 
 export const evaluateMonitors = () =>
   api.post('/api/v1/ops/evaluate-monitors').then(r => r.data);

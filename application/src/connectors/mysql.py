@@ -1,5 +1,6 @@
 # this is the class for mysql connector
 import os
+from typing import Any
 
 import pymysql
 
@@ -20,6 +21,8 @@ class MysqlConnector:
         port: int = 3306,
         password: str | None = None,
         schema: str = "",  # optional filter; in MySQL schema ≈ database
+        tables: list[str] | None = None,
+        **_: Any,
     ):
         self.tenant_id = tenant_id
         self.connector_instance_id = connector_instance_id
@@ -29,6 +32,11 @@ class MysqlConnector:
         self.database = database
         self.schema = (schema or "").strip()
         self.password = password or os.getenv("MYSQL_PASSWORD") or os.getenv("DB_PASSWORD", "")
+        self.tables = [
+            str(t).strip().upper()
+            for t in (tables or [])
+            if str(t).strip()
+        ]
 
     def _connect(self):
         """connect to MySQL"""
@@ -108,7 +116,9 @@ class MysqlConnector:
         self._connect()
         try:
             sql = """
-                SELECT TABLE_SCHEMA, TABLE_NAME, TABLE_ROWS, UPDATE_TIME
+                SELECT TABLE_SCHEMA, TABLE_NAME, TABLE_ROWS,
+                       (COALESCE(DATA_LENGTH, 0) + COALESCE(INDEX_LENGTH, 0)) AS size_bytes,
+                       UPDATE_TIME
                 FROM INFORMATION_SCHEMA.TABLES
                 WHERE TABLE_TYPE = 'BASE TABLE'
             """
@@ -118,24 +128,77 @@ class MysqlConnector:
             if target_schema:
                 sql += " AND TABLE_SCHEMA = %s"
                 params.append(target_schema)
+            if self.tables:
+                placeholders = ", ".join(["%s"] * len(self.tables))
+                sql += f" AND UPPER(TABLE_NAME) IN ({placeholders})"
+                params.extend(self.tables)
             sql += " ORDER BY TABLE_SCHEMA, TABLE_NAME"
 
             self.cursor.execute(sql, params)
 
             rows: list[dict] = []
-            for schema_name, table, row_count, update_time in self.cursor.fetchall():
+            for schema_name, table, row_count, size_bytes, update_time in self.cursor.fetchall():
                 rows.append(
                     {
                         "database": schema_name,
                         "schema": schema_name,
                         "table": table,
                         "dataset_id": f"{schema_name}.{table}",
-                        "row_count": row_count,
+                        "row_count": int(row_count) if row_count is not None else None,
+                        "size_bytes": int(size_bytes) if size_bytes is not None else None,
                         "last_altered": (
                             update_time.isoformat()
                             if hasattr(update_time, "isoformat")
                             else update_time
                         ),
+                    }
+                )
+            return rows
+        finally:
+            self.cursor.close()
+            self.connection.close()
+
+    def fetch_columns(self, tables: list[str] | None = None) -> list[dict]:
+        """
+        Pull column metadata for tables in this database/schema.
+        Returns rows: database, schema, table, column_name, data_type, ordinal_position.
+        """
+        names = [
+            str(t).strip().upper()
+            for t in (tables if tables is not None else self.tables)
+            if str(t).strip()
+        ]
+        self._connect()
+        try:
+            sql = """
+                SELECT TABLE_SCHEMA, TABLE_SCHEMA, TABLE_NAME,
+                       COLUMN_NAME, DATA_TYPE, ORDINAL_POSITION
+                FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE 1=1
+            """
+            params: list = []
+            target_schema = self.schema or self.database
+            if target_schema:
+                sql += " AND TABLE_SCHEMA = %s"
+                params.append(target_schema)
+            if names:
+                placeholders = ", ".join(["%s"] * len(names))
+                sql += f" AND UPPER(TABLE_NAME) IN ({placeholders})"
+                params.extend(names)
+            sql += " ORDER BY TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION"
+
+            self.cursor.execute(sql, params)
+            rows: list[dict] = []
+            for db, schema_name, table, col, dtype, ordinal in self.cursor.fetchall():
+                rows.append(
+                    {
+                        "database": db,
+                        "schema": schema_name,
+                        "table": table,
+                        "column_name": col,
+                        "data_type": dtype,
+                        "ordinal_position": int(ordinal) if ordinal is not None else None,
+                        "dataset_id": f"{db}.{table}",
                     }
                 )
             return rows
@@ -161,6 +224,7 @@ class MysqlConnector:
                         "table": row["table"],
                         "dataset_id": row["dataset_id"],
                         "row_count": row.get("row_count"),
+                        "size_bytes": row.get("size_bytes"),
                         "last_altered": row.get("last_altered"),
                     },
                 }

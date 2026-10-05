@@ -107,7 +107,8 @@ class PostgresConnector:
             sql = """
                 SELECT n.nspname, c.relname,
                        COALESCE(s.n_live_tup, 0),
-                       GREATEST(s.last_vacuum, s.last_autovacuum, s.last_analyze, s.last_autoanalyze)
+                       GREATEST(s.last_vacuum, s.last_autovacuum, s.last_analyze, s.last_autoanalyze),
+                       COALESCE(pg_total_relation_size(c.oid), 0) AS size_bytes
                 FROM pg_class c
                 JOIN pg_namespace n ON n.oid = c.relnamespace
                 LEFT JOIN pg_stat_all_tables s ON s.relid = c.oid
@@ -120,7 +121,7 @@ class PostgresConnector:
             sql += " ORDER BY c.relname"
             self.cursor.execute(sql, params)
             rows = []
-            for schema_name, table, row_count, last_altered in self.cursor.fetchall():
+            for schema_name, table, row_count, last_altered, size_bytes in self.cursor.fetchall():
                 rows.append(
                     {
                         "database": self.database,
@@ -128,11 +129,55 @@ class PostgresConnector:
                         "table": table,
                         "dataset_id": f"{self.database}.{schema_name}.{table}",
                         "row_count": int(row_count or 0),
+                        "size_bytes": int(size_bytes or 0),
                         "last_altered": (
                             last_altered.isoformat()
                             if hasattr(last_altered, "isoformat")
                             else last_altered
                         ),
+                    }
+                )
+            return rows
+        finally:
+            self.cursor.close()
+            self.connection.close()
+
+    def fetch_columns(self, tables: list[str] | None = None) -> list[dict]:
+        """
+        Pull column metadata for tables in this database/schema.
+        Returns rows: database, schema, table, column_name, data_type, ordinal_position.
+        """
+        names = [
+            str(t).strip().upper()
+            for t in (tables if tables is not None else self.tables)
+            if str(t).strip()
+        ]
+        self._connect()
+        try:
+            sql = """
+                SELECT table_catalog, table_schema, table_name,
+                       column_name, data_type, ordinal_position
+                FROM information_schema.columns
+                WHERE table_schema = %s
+            """
+            params: list[Any] = [self.schema]
+            if names:
+                sql += " AND UPPER(table_name) = ANY(%s)"
+                params.append(names)
+            sql += " ORDER BY table_schema, table_name, ordinal_position"
+
+            self.cursor.execute(sql, params)
+            rows: list[dict] = []
+            for db, schema_name, table, col, dtype, ordinal in self.cursor.fetchall():
+                rows.append(
+                    {
+                        "database": db or self.database,
+                        "schema": schema_name,
+                        "table": table,
+                        "column_name": col,
+                        "data_type": dtype,
+                        "ordinal_position": int(ordinal) if ordinal is not None else None,
+                        "dataset_id": f"{db or self.database}.{schema_name}.{table}",
                     }
                 )
             return rows
@@ -155,6 +200,7 @@ class PostgresConnector:
                         "table": row["table"],
                         "dataset_id": row["dataset_id"],
                         "row_count": row.get("row_count"),
+                        "size_bytes": row.get("size_bytes"),
                         "last_altered": row.get("last_altered"),
                     },
                 }

@@ -73,27 +73,76 @@ class RedshiftConnector:
         self._connect()
         try:
             sql = """
-                SELECT table_schema, table_name
-                FROM information_schema.tables
-                WHERE table_type = 'BASE TABLE' AND table_schema = %s
+                SELECT t.table_schema, t.table_name,
+                       s.tbl_rows,
+                       (s.size * 1024 * 1024) AS size_bytes
+                FROM information_schema.tables t
+                LEFT JOIN svv_table_info s
+                  ON s.schema = t.table_schema AND s.table = t.table_name
+                WHERE t.table_type = 'BASE TABLE' AND t.table_schema = %s
             """
             params: list[Any] = [self.schema]
             if self.tables:
                 placeholders = ",".join(["%s"] * len(self.tables))
-                sql += f" AND UPPER(table_name) IN ({placeholders})"
+                sql += f" AND UPPER(t.table_name) IN ({placeholders})"
                 params.extend(self.tables)
-            sql += " ORDER BY table_name"
+            sql += " ORDER BY t.table_name"
             self.cursor.execute(sql, params)
             rows = []
-            for schema_name, table in self.cursor.fetchall():
+            for schema_name, table, row_count, size_bytes in self.cursor.fetchall():
                 rows.append(
                     {
                         "database": self.database,
                         "schema": schema_name,
                         "table": table,
                         "dataset_id": f"{self.database}.{schema_name}.{table}",
-                        "row_count": None,
+                        "row_count": int(row_count) if row_count is not None else None,
+                        "size_bytes": int(size_bytes) if size_bytes is not None else None,
                         "last_altered": None,
+                    }
+                )
+            return rows
+        finally:
+            self.cursor.close()
+            self.connection.close()
+
+    def fetch_columns(self, tables: list[str] | None = None) -> list[dict]:
+        """
+        Pull column metadata for tables in this database/schema.
+        Returns rows: database, schema, table, column_name, data_type, ordinal_position.
+        """
+        names = [
+            str(t).strip().upper()
+            for t in (tables if tables is not None else self.tables)
+            if str(t).strip()
+        ]
+        self._connect()
+        try:
+            sql = """
+                SELECT table_catalog, table_schema, table_name,
+                       column_name, data_type, ordinal_position
+                FROM information_schema.columns
+                WHERE table_schema = %s
+            """
+            params: list[Any] = [self.schema]
+            if names:
+                placeholders = ",".join(["%s"] * len(names))
+                sql += f" AND UPPER(table_name) IN ({placeholders})"
+                params.extend(names)
+            sql += " ORDER BY table_schema, table_name, ordinal_position"
+
+            self.cursor.execute(sql, params)
+            rows: list[dict] = []
+            for db, schema_name, table, col, dtype, ordinal in self.cursor.fetchall():
+                rows.append(
+                    {
+                        "database": db or self.database,
+                        "schema": schema_name,
+                        "table": table,
+                        "column_name": col,
+                        "data_type": dtype,
+                        "ordinal_position": int(ordinal) if ordinal is not None else None,
+                        "dataset_id": f"{db or self.database}.{schema_name}.{table}",
                     }
                 )
             return rows
@@ -116,6 +165,7 @@ class RedshiftConnector:
                         "table": row["table"],
                         "dataset_id": row["dataset_id"],
                         "row_count": row.get("row_count"),
+                        "size_bytes": row.get("size_bytes"),
                         "last_altered": row.get("last_altered"),
                     },
                 }
