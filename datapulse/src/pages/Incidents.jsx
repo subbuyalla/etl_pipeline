@@ -12,6 +12,7 @@ import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { DashboardPageSkeleton } from '../components/SkeletonLoaders';
 import { fetchIncidents, fetchIncidentDetail, fetchFilters } from '../api/client';
+import { useCopilot } from '../context/CopilotContext';
 import {
   dash, kpiMapFrom, buildDateParams, handleDateChange,
   formatSeriesTick, TOOLTIP_STYLE,
@@ -117,6 +118,7 @@ function KpiDelta({ kpi }) {
 }
 
 export default function Incidents() {
+  const { openCopilot } = useCopilot();
   const [incidents, setIncidents] = useState([]);
   const [kpis, setKpis] = useState([]);
   const [series, setSeries] = useState(null);
@@ -379,7 +381,7 @@ export default function Incidents() {
         )}
 
         {!loadError && (openCount > 0 || criticalCount > 0 ? (
-          <div className={`obs-alert ${criticalCount > 0 ? 'is-bad' : 'is-warn'}`}>
+          <div className={`obs-alert ${criticalCount > 0 ? 'is-bad' : 'is-warn'}`} style={{ display: 'flex', alignItems: 'center' }}>
             <AlertTriangle size={18} />
             <div>
               <strong>
@@ -389,6 +391,14 @@ export default function Incidents() {
               </strong>
               {' '}Review failed pipeline runs in the feed below.
             </div>
+            <button
+              type="button"
+              className="export-btn"
+              style={{ marginLeft: 'auto', background: 'rgba(99, 102, 241, 0.1)', color: '#6366f1', border: '1px solid rgba(99, 102, 241, 0.3)', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 6 }}
+              onClick={() => openCopilot('What is the root cause of our current open incidents?')}
+            >
+              ✨ Ask Copilot to Triage
+            </button>
           </div>
         ) : (
           <div className="obs-alert is-ok">
@@ -830,6 +840,26 @@ export default function Incidents() {
                       ))}
                     </div>
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 4 }}>
+                      <button
+                        type="button"
+                        className="export-btn"
+                        style={{
+                          background: 'linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%)',
+                          color: '#ffffff',
+                          border: 'none',
+                          fontWeight: 600,
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 6
+                        }}
+                        onClick={() => openCopilot(`Diagnose root cause for incident '${incidentTitle(selected)}'`, {
+                          active_pipeline_id: selected.pipeline_id,
+                          active_run_id: selected.run_id || detail?.run_id,
+                          active_tool: selected.tool || detail?.tool,
+                        })}
+                      >
+                        ✨ Copilot Diagnosis
+                      </button>
                       <Link className="export-btn" to="/pipelines">Pipelines</Link>
                       <Link className="export-btn" to="/logs">Logs</Link>
                       {(selected.run_id || detail?.run_id) && (

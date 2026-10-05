@@ -110,6 +110,9 @@ from application.src.services.dashboard_service import (  # noqa: E402
 from application.src.api.observability_router import (  # noqa: E402
     router as observability_api_router,
 )
+from application.src.api.copilot_router import (  # noqa: E402
+    router as copilot_api_router,
+)
 
 app = FastAPI(
     title="ETL Observability API",
@@ -199,6 +202,7 @@ Dashboard read APIs live under `/api/v1/*`.
 )
 
 app.include_router(observability_api_router, prefix="/api/v1")
+app.include_router(copilot_api_router)
 
 # Allow local Vite UI (and similar) to call this API from another origin
 app.add_middleware(

@@ -21,15 +21,18 @@ import Settings from './pages/Settings';
 import MaturityAssessment from './pages/MaturityAssessment';
 import DataOpsMaturity from './pages/DataOpsMaturity';
 import ErrorBoundary from './components/ErrorBoundary';
+import { CopilotProvider } from './context/CopilotContext';
+import CopilotDrawer from './components/CopilotDrawer';
 
 export default function App() {
   return (
     <ThemeProvider>
       <BrowserRouter>
-        <div className="app-layout">
-          <Sidebar />
-          <main className="main-content">
-            <ErrorBoundary>
+        <CopilotProvider>
+          <div className="app-layout">
+            <Sidebar />
+            <main className="main-content">
+              <ErrorBoundary>
               <Routes>
                 <Route path="/" element={<Overview />} />
                 <Route path="/pipelines" element={<Pipelines />} />
@@ -63,8 +66,10 @@ export default function App() {
               </Routes>
             </ErrorBoundary>
           </main>
+          <CopilotDrawer />
         </div>
-      </BrowserRouter>
-    </ThemeProvider>
-  );
+      </CopilotProvider>
+    </BrowserRouter>
+  </ThemeProvider>
+);
 }

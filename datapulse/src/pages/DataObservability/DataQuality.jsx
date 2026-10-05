@@ -10,6 +10,7 @@ import {
 import PageHeader from '../../components/PageHeader';
 import { DashboardPageSkeleton } from '../../components/SkeletonLoaders';
 import { fetchDataQuality, evaluateDqRules, fetchDqRules, fetchPipelines } from '../../api/client';
+import { useCopilot } from '../../context/CopilotContext';
 import { dash, kpiMapFrom, buildDateParams, handleDateChange, TOOLTIP_STYLE } from './obsUtils';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -91,6 +92,7 @@ function readableMessage(item) {
 // ── component ─────────────────────────────────────────────────────────────────
 
 export default function DataQuality() {
+  const { openCopilot } = useCopilot();
   const [data, setData]                   = useState([]);
   const [kpis, setKpis]                   = useState([]);
   const [charts, setCharts]               = useState(null);
@@ -512,6 +514,27 @@ export default function DataQuality() {
                       <RotateCcw size={13} /> Clear filters
                     </button>
                   )}
+                  <button
+                    type="button"
+                    className="export-btn"
+                    style={{
+                      background: 'linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%)',
+                      color: '#ffffff',
+                      border: 'none',
+                      fontWeight: 600,
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 6
+                    }}
+                    onClick={() => openCopilot(
+                      pipelineFilter && pipelineFilter !== 'All'
+                        ? `Explain data quality check results and anomalies for ${pipelineFilter}`
+                        : 'Explain current data quality violations and recommend rule fixes',
+                      { active_pipeline_id: pipelineFilter !== 'All' ? pipelineFilter : null, active_tool: sourceFilter !== 'All' ? sourceFilter : null }
+                    )}
+                  >
+                    ✨ Copilot DQ Analysis
+                  </button>
                   <button type="button" className="export-btn" onClick={handleRunChecks} disabled={evaluating}>
                     <Play size={13} className={evaluating ? 'spin' : ''} />
                     {evaluating ? 'Running checks…' : 'Run DQ checks'}
