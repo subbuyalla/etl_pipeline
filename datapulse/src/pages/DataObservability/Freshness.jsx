@@ -78,6 +78,7 @@ export default function Freshness() {
   // Search & Pagination
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('All');
+  const [toolFilter, setToolFilter] = useState('All');
   const [currentPage, setCurrentPage] = useState(1);
   const pageSize = 8;
 
@@ -126,6 +127,9 @@ export default function Freshness() {
       if (selectedPipelineFilter && selectedPipelineFilter !== 'all') {
         params.pipeline_id = selectedPipelineFilter;
       }
+      if (toolFilter && toolFilter !== 'All') {
+        params.tool = toolFilter.toLowerCase();
+      }
 
       const res = await fetchFreshness(params);
       const items = res?.items || res?.freshness_checks || [];
@@ -142,7 +146,7 @@ export default function Freshness() {
     } finally {
       setLoading(false);
     }
-  }, [datePreset, startDate, endDate, startTime, endTime, selectedPipelineFilter, selectedPipelineId]);
+  }, [datePreset, startDate, endDate, startTime, endTime, selectedPipelineFilter, toolFilter, selectedPipelineId]);
 
   useEffect(() => {
     loadData();
@@ -163,6 +167,19 @@ export default function Freshness() {
       return true;
     });
   }, [data]);
+
+  // Available tools for dropdown
+  const availableTools = useMemo(() => {
+    const s = new Set();
+    [...(pipelineOptions || []), ...(data || [])].forEach(p => {
+      [p.source_tool, p.etl_tool, p.target_tool, p.tool_name].forEach(t => {
+        if (t && String(t).trim()) s.add(String(t).trim());
+      });
+    });
+    const list = Array.from(s).sort();
+    if (list.length > 0) return list;
+    return ['Informatica', 'Snowflake', 'dbt', 'MySQL', 'PostgreSQL'];
+  }, [pipelineOptions, data]);
 
   // Combined available pipelines list for dropdown
   const availablePipelines = useMemo(() => {
@@ -185,8 +202,10 @@ export default function Freshness() {
     const matchesSearch = !search.trim() || hay.includes(search.toLowerCase());
     const matchesStatus = statusFilter === 'All' || st === statusFilter.toLowerCase();
     const matchesPipeline = selectedPipelineFilter === 'all' || d.pipeline_id === selectedPipelineFilter;
-    return matchesSearch && matchesStatus && matchesPipeline;
-  }), [uniqueData, search, statusFilter, selectedPipelineFilter]);
+    const toolHay = [d.source_tool, d.etl_tool, d.target_tool, d.tool_name].filter(Boolean).join(' ').toLowerCase();
+    const matchesTool = toolFilter === 'All' || toolHay.includes(toolFilter.toLowerCase());
+    return matchesSearch && matchesStatus && matchesPipeline && matchesTool;
+  }), [uniqueData, search, statusFilter, selectedPipelineFilter, toolFilter]);
 
   // Dynamically derive KPIs from the active filtered scope so the whole screen updates
   const totalInScope = filtered.length;
@@ -341,6 +360,29 @@ export default function Freshness() {
                 <option key={p.id} value={p.id}>
                   {p.name}
                 </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Connection / Tool Dropdown */}
+          <div style={{
+            display: 'inline-flex', alignItems: 'center', gap: 6,
+            padding: '5px 10px', borderRadius: 6, border: '1px solid var(--border)',
+            background: 'var(--bg-input)', fontSize: 12,
+          }}>
+            <Database size={13} color="#6366F1" />
+            <select
+              value={toolFilter}
+              onChange={(e) => {
+                setToolFilter(e.target.value);
+                setCurrentPage(1);
+              }}
+              style={{ border: 'none', background: 'transparent', outline: 'none', fontSize: 12, cursor: 'pointer', fontWeight: 500 }}
+              title="Filter by Connection or Tool (Informatica, Snowflake, dbt, etc.)"
+            >
+              <option value="All">All Connections</option>
+              {availableTools.map(t => (
+                <option key={t} value={t}>{t}</option>
               ))}
             </select>
           </div>

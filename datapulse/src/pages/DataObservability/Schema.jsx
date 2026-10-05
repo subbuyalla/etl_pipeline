@@ -15,6 +15,7 @@ export default function Schema() {
   const [schemaData, setSchemaData] = useState(null);
   const [pipelineOptions, setPipelineOptions] = useState([]);
   const [pipelineFilter, setPipelineFilter] = useState('All');
+  const [toolFilter, setToolFilter] = useState('All');
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [headerDatePreset, setHeaderDatePreset] = useState('all');
@@ -38,13 +39,16 @@ export default function Schema() {
       if (pipelineFilter && pipelineFilter !== 'All') {
         params.pipeline_name = pipelineFilter;
       }
+      if (toolFilter && toolFilter !== 'All') {
+        params.tool = toolFilter.toLowerCase();
+      }
       setSchemaData(await fetchSchema(params));
     } catch (e) {
       console.error(e);
     } finally {
       setLoading(false);
     }
-  }, [headerDatePreset, customDateRange, pipelineFilter]);
+  }, [headerDatePreset, customDateRange, pipelineFilter, toolFilter]);
 
   useEffect(() => { loadData(); }, [loadData]);
 
@@ -57,18 +61,33 @@ export default function Schema() {
     return Array.from(names).sort();
   }, [pipelineOptions]);
 
+  const availableTools = useMemo(() => {
+    const names = new Set();
+    pipelineOptions.forEach(p => {
+      [p.source_tool, p.etl_tool, p.target_tool, p.tool_name].forEach(t => {
+        if (t && String(t).trim()) names.add(String(t).trim());
+      });
+    });
+    const list = Array.from(names).sort();
+    return list.length ? list : ['Informatica', 'Snowflake', 'dbt', 'MySQL', 'PostgreSQL'];
+  }, [pipelineOptions]);
+
   const kpi = useMemo(() => kpiMapFrom(schemaData?.kpis), [schemaData]);
   const changes = Number(kpi.schema_changes?.value ?? schemaData?.summary?.changes ?? 0);
   const breaking = Number(kpi.breaking_changes?.value ?? schemaData?.summary?.breaking ?? 0);
   const events = schemaData?.items || [];
   const meta = schemaData?.meta;
 
-  const filtersDirty = Boolean(search || (pipelineFilter && pipelineFilter !== 'All'));
+  const filtersDirty = Boolean(search || (pipelineFilter && pipelineFilter !== 'All') || (toolFilter && toolFilter !== 'All'));
   const filtered = useMemo(() => events.filter((ev) => {
+    if (toolFilter && toolFilter !== 'All') {
+      const toolHay = [ev.source_tool, ev.tool, ev.tool_name, ev.pipeline_name].filter(Boolean).join(' ').toLowerCase();
+      if (!toolHay.includes(toolFilter.toLowerCase())) return false;
+    }
     if (!search) return true;
-    const hay = [ev.table_name, ev.column_name, ev.change_type, ev.impact].join(' ').toLowerCase();
+    const hay = [ev.table_name, ev.column_name, ev.change_type, ev.impact, ev.pipeline_name].join(' ').toLowerCase();
     return hay.includes(search.toLowerCase());
-  }), [events, search]);
+  }), [events, search, toolFilter]);
 
   const filteredChanges = filtered.length;
   const filteredBreaking = filtered.filter(ev => String(ev.impact || '').toLowerCase() === 'breaking').length;
@@ -169,6 +188,20 @@ export default function Schema() {
                   ))}
                 </select>
               </div>
+              <div className="filter-select">
+                <label>Connection / Tool</label>
+                <select
+                  className="select-control"
+                  value={toolFilter}
+                  onChange={e => setToolFilter(e.target.value)}
+                  title="Filter schema by connection or tool (Informatica, Snowflake, dbt, etc.)"
+                >
+                  <option value="All">All Connections</option>
+                  {availableTools.map(t => (
+                    <option key={t} value={t}>{t}</option>
+                  ))}
+                </select>
+              </div>
               {filtersDirty && (
                 <button
                   type="button"
@@ -177,6 +210,7 @@ export default function Schema() {
                   onClick={() => {
                     setSearch('');
                     setPipelineFilter('All');
+                    setToolFilter('All');
                   }}
                 >
                   Clear filters

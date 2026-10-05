@@ -23,7 +23,7 @@ import {
 } from '../api/client';
 import { TOOLTIP_STYLE } from './DataObservability/obsUtils';
 
-function buildQueryParams({ headerDatePreset, customDateRange, pipelineFilter, statusFilter }) {
+function buildQueryParams({ headerDatePreset, customDateRange, pipelineFilter, statusFilter, toolFilter }) {
   const params = {};
   if (headerDatePreset === 'custom' && customDateRange?.start && customDateRange?.end) {
     params.start_date = customDateRange.start;
@@ -34,6 +34,7 @@ function buildQueryParams({ headerDatePreset, customDateRange, pipelineFilter, s
   if (pipelineFilter && pipelineFilter !== 'All') params.pipeline_name = pipelineFilter;
   // Run status: success | failed | running | error | cancelled
   if (statusFilter && statusFilter !== 'All') params.status = String(statusFilter).toLowerCase();
+  if (toolFilter && toolFilter !== 'All') params.tool = String(toolFilter).toLowerCase();
   return params;
 }
 
@@ -65,6 +66,7 @@ export default function Overview() {
   const [search, setSearch] = useState('');
   const [pipelineFilter, setPipelineFilter] = useState('All');
   const [statusFilter, setStatusFilter] = useState('All');
+  const [toolFilter, setToolFilter] = useState('All');
   const [headerDatePreset, setHeaderDatePreset] = useState('all');
   const [customDateRange, setCustomDateRange] = useState(null);
   const requestIdRef = useRef(0);
@@ -79,6 +81,7 @@ export default function Overview() {
         customDateRange,
         pipelineFilter,
         statusFilter,
+        toolFilter,
       });
 
       const dateParams = {};
@@ -132,7 +135,7 @@ export default function Overview() {
     } finally {
       if (reqId === requestIdRef.current) setLoading(false);
     }
-  }, [headerDatePreset, customDateRange, pipelineFilter, statusFilter]);
+  }, [headerDatePreset, customDateRange, pipelineFilter, statusFilter, toolFilter]);
 
   useEffect(() => {
     loadData();
@@ -148,6 +151,18 @@ export default function Overview() {
   }, [filterCatalog, overviewData]);
 
   const statusOptions = useMemo(() => filterCatalog?.statuses || [], [filterCatalog]);
+
+  const toolOptions = useMemo(() => {
+    const raw = filterCatalog?.tools || [];
+    if (raw.length > 0) return raw;
+    return [
+      { id: 'informatica', label: 'Informatica' },
+      { id: 'snowflake', label: 'Snowflake' },
+      { id: 'dbt', label: 'dbt' },
+      { id: 'mysql', label: 'MySQL' },
+      { id: 'postgresql', label: 'PostgreSQL' },
+    ];
+  }, [filterCatalog]);
 
   const datePresets = useMemo(() => {
     const fromApi = filterCatalog?.presets;
@@ -181,13 +196,19 @@ export default function Overview() {
 
   const filteredPipelines = useMemo(() => {
     let list = pipelinesList;
-    // When run-status filter is on, hide rows the API marks N/A (no matching runs)
     if (statusFilter !== 'All') {
       const want = statusFilter.toLowerCase();
       list = list.filter(p => {
         const s = (p.status || '').toLowerCase();
         if (!s || s === 'n/a') return false;
         return s === want;
+      });
+    }
+    if (toolFilter !== 'All') {
+      const tf = toolFilter.toLowerCase();
+      list = list.filter(p => {
+        const hay = [p.source_tool, p.target_tool, p.etl_tool, p.tool_name].filter(Boolean).join(' ').toLowerCase();
+        return hay.includes(tf);
       });
     }
     if (!search.trim()) return list;
@@ -198,7 +219,7 @@ export default function Overview() {
       ].filter(Boolean).join(' ').toLowerCase();
       return hay.includes(q);
     });
-  }, [pipelinesList, search, statusFilter]);
+  }, [pipelinesList, search, statusFilter, toolFilter]);
 
   const incidentsList = useMemo(() => {
     const incs =
@@ -284,6 +305,7 @@ export default function Overview() {
     setSearch('');
     setPipelineFilter('All');
     setStatusFilter('All');
+    setToolFilter('All');
     setHeaderDatePreset('all');
     setCustomDateRange(null);
   };
@@ -292,6 +314,7 @@ export default function Overview() {
     Boolean(search.trim()) ||
     pipelineFilter !== 'All' ||
     statusFilter !== 'All' ||
+    toolFilter !== 'All' ||
     headerDatePreset !== 'all';
 
   const formatApiTime = (raw) => {
@@ -358,6 +381,23 @@ export default function Overview() {
               <option value="All">All Pipelines</option>
               {distinctPipelineNames.map(name => (
                 <option key={name} value={name}>{name}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="filter-select">
+            <label>Connection / Tool</label>
+            <select
+              className="select-control"
+              value={toolFilter}
+              onChange={e => setToolFilter(e.target.value)}
+              title="Filter by connection or tool (Informatica, Snowflake, dbt, etc.)"
+            >
+              <option value="All">All Connections</option>
+              {toolOptions.map(t => (
+                <option key={t.id || t.name} value={t.id || t.name}>
+                  {t.label || t.name || t.id}
+                </option>
               ))}
             </select>
           </div>

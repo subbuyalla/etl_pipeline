@@ -137,6 +137,8 @@ export default function Incidents() {
   const [sevFilter, setSevFilter] = useState('All');
   const [statusFilter, setStatusFilter] = useState('All');
   const [pipelineFilter, setPipelineFilter] = useState('All');
+  const [toolFilter, setToolFilter] = useState('All');
+  const [toolOptions, setToolOptions] = useState([]);
   const [page, setPage] = useState(1);
   const [headerDatePreset, setHeaderDatePreset] = useState('all');
   const [customDateRange, setCustomDateRange] = useState(null);
@@ -161,6 +163,9 @@ export default function Incidents() {
         if (Array.isArray(res.incident_statuses) && res.incident_statuses.length) {
           setIncidentStatuses(res.incident_statuses);
         }
+        if (Array.isArray(res.tools) && res.tools.length) {
+          setToolOptions(res.tools);
+        }
       })
       .catch(() => {});
     return () => { alive = false; };
@@ -177,6 +182,7 @@ export default function Incidents() {
       };
       if (statusFilter !== 'All') params.status = statusFilter.toLowerCase();
       if (pipelineFilter !== 'All') params.pipeline_id = pipelineFilter;
+      if (toolFilter !== 'All') params.tool = toolFilter.toLowerCase();
 
       const res = await fetchIncidents(params);
       setIncidents(pickList(res));
@@ -197,7 +203,7 @@ export default function Incidents() {
     } finally {
       setLoading(false);
     }
-  }, [headerDatePreset, customDateRange, statusFilter, pipelineFilter, page]);
+  }, [headerDatePreset, customDateRange, statusFilter, pipelineFilter, toolFilter, page]);
 
   useEffect(() => { loadData(); }, [loadData]);
 
@@ -293,6 +299,10 @@ export default function Incidents() {
       const sev = String(inc.severity || '').toLowerCase();
       const matchSev = sevFilter === 'All' || sev === sevFilter.toLowerCase();
       if (!matchSev) return false;
+      if (toolFilter !== 'All') {
+        const toolHay = [inc.tool, inc.tool_name, inc.source_tool, inc.pipeline_name].filter(Boolean).join(' ').toLowerCase();
+        if (!toolHay.includes(toolFilter.toLowerCase())) return false;
+      }
       if (!q) return true;
       const hay = [
         incidentTitle(inc),
@@ -304,12 +314,13 @@ export default function Incidents() {
       ].filter(Boolean).join(' ').toLowerCase();
       return hay.includes(q);
     });
-  }, [incidents, search, sevFilter]);
+  }, [incidents, search, sevFilter, toolFilter]);
 
   const clientFiltersActive = Boolean(search.trim()) || sevFilter !== 'All';
   const apiFiltersActive =
     statusFilter !== 'All' ||
     pipelineFilter !== 'All' ||
+    toolFilter !== 'All' ||
     headerDatePreset !== 'all';
   const filtersActive = clientFiltersActive || apiFiltersActive;
 
@@ -318,6 +329,7 @@ export default function Incidents() {
     setSevFilter('All');
     setStatusFilter('All');
     setPipelineFilter('All');
+    setToolFilter('All');
     setPage(1);
     setHeaderDatePreset('all');
     setCustomDateRange(null);
@@ -426,6 +438,22 @@ export default function Incidents() {
                 : ['Critical', 'High', 'Medium', 'Low']
               ).map((s) => (
                 <option key={s} value={s}>{s}</option>
+              ))}
+            </select>
+          </div>
+          <div className="filter-select">
+            <label>Connection / Tool</label>
+            <select
+              className="select-control"
+              value={toolFilter}
+              onChange={(e) => { setToolFilter(e.target.value); setPage(1); }}
+              title="Filter incidents by connection or tool (Informatica, Snowflake, dbt, etc.)"
+            >
+              <option value="All">All Connections</option>
+              {toolOptions.map((t) => (
+                <option key={t.id || t.name} value={t.id || t.name}>
+                  {t.label || t.name || t.id}
+                </option>
               ))}
             </select>
           </div>

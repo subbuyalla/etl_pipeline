@@ -127,6 +127,7 @@ export default function DataQuality() {
       const params = buildDateParams(headerDatePreset, customDateRange);
       if (pipelineFilter !== 'All') params.pipeline_name = pipelineFilter;
       if (dimensionFilter !== 'All') params.dimension = dimensionFilter.toLowerCase();
+      if (sourceFilter !== 'All') params.source = sourceFilter.toLowerCase();
 
       const [qRes, rulesRes] = await Promise.allSettled([
         fetchDataQuality(params),
@@ -149,7 +150,7 @@ export default function DataQuality() {
     } finally {
       setLoading(false);
     }
-  }, [headerDatePreset, customDateRange, pipelineFilter, dimensionFilter]);
+  }, [headerDatePreset, customDateRange, pipelineFilter, dimensionFilter, sourceFilter]);
 
   useEffect(() => { loadData(); }, [loadData]);
 
@@ -554,19 +555,21 @@ export default function DataQuality() {
                     {distinctDimensions.map(d => <option key={d} value={d}>{dimLabel(d)}</option>)}
                   </select>
                 </div>
-                {distinctSources.length > 1 && (
-                  <div className="filter-select">
-                    <label>Source</label>
-                    <select className="select-control" value={sourceFilter}
-                      onChange={e => { setSourceFilter(e.target.value); setPage(1); }}>
-                      <option value="All">All sources</option>
-                      {distinctSources.includes('dbt')         && <option value="dbt">dbt tests</option>}
-                      {distinctSources.includes('informatica') && <option value="informatica">Informatica</option>}
-                      {distinctSources.includes('monitor')     && <option value="monitor">Monitors</option>}
-                      {distinctSources.includes('platform')    && <option value="platform">Platform SQL</option>}
-                    </select>
-                  </div>
-                )}
+                <div className="filter-select">
+                  <label>Connection / Tool</label>
+                  <select
+                    className="select-control"
+                    value={sourceFilter}
+                    onChange={e => { setSourceFilter(e.target.value); setPage(1); }}
+                    title="Filter checks by connection or tool (Informatica, dbt, etc.)"
+                  >
+                    <option value="All">All Connections</option>
+                    <option value="informatica">Informatica</option>
+                    <option value="dbt">dbt test</option>
+                    <option value="monitor">Monitors</option>
+                    <option value="platform">Platform SQL</option>
+                  </select>
+                </div>
               </div>
 
               <div className="table-wrapper">

@@ -191,6 +191,7 @@ export default function Volume() {
   const [statusFilter, setStatusFilter] = useState('All');
   const [activityFilter, setActivityFilter] = useState('All');
   const [pipelineFilter, setPipelineFilter] = useState('All');
+  const [toolFilter, setToolFilter] = useState('All');
   const [breakTab, setBreakTab] = useState('pipeline');
   const [headerDatePreset, setHeaderDatePreset] = useState('30d');
   const [customDateRange, setCustomDateRange] = useState(null);
@@ -202,6 +203,9 @@ export default function Volume() {
       const params = buildDateParams(headerDatePreset, customDateRange);
       if (pipelineFilter && pipelineFilter !== 'All') {
         params.pipeline_name = pipelineFilter;
+      }
+      if (toolFilter && toolFilter !== 'All') {
+        params.tool = toolFilter.toLowerCase();
       }
       const [volRes, monRes, pipeRes] = await Promise.allSettled([
         fetchVolume(params),
@@ -244,7 +248,7 @@ export default function Volume() {
     } finally {
       setLoading(false);
     }
-  }, [headerDatePreset, customDateRange, pipelineFilter]);
+  }, [headerDatePreset, customDateRange, pipelineFilter, toolFilter]);
 
   useEffect(() => { loadData(); }, [loadData]);
 
@@ -259,6 +263,17 @@ export default function Volume() {
       if (p.pipeline_id) map[p.pipeline_id] = p;
     });
     return map;
+  }, [pipelineMeta]);
+
+  const toolOptions = useMemo(() => {
+    const set = new Set();
+    pipelineMeta.forEach(p => {
+      [p.source_tool, p.etl_tool, p.target_tool].forEach(t => {
+        if (t && String(t).trim()) set.add(String(t).trim());
+      });
+    });
+    const list = Array.from(set).sort();
+    return list.length ? list : ['Informatica', 'Snowflake', 'dbt', 'MySQL', 'PostgreSQL'];
   }, [pipelineMeta]);
 
   const pipelineNames = useMemo(() => {
@@ -284,10 +299,13 @@ export default function Volume() {
       || (activityFilter === 'active' && records > 0)
       || (activityFilter === 'empty' && records === 0);
     const pipelineOk = pipelineFilter === 'All' || d.pipeline_name === pipelineFilter;
-    return (!search || hay.includes(search.toLowerCase())) && statusOk && activityOk && pipelineOk;
-  }), [data, search, statusFilter, activityFilter, pipelineFilter]);
+    const meta = metaById[d.pipeline_id];
+    const toolHay = [meta?.source_tool, meta?.etl_tool, meta?.target_tool, d.source_tool, d.etl_tool, d.target_tool].filter(Boolean).join(' ').toLowerCase();
+    const toolOk = toolFilter === 'All' || toolHay.includes(toolFilter.toLowerCase());
+    return (!search || hay.includes(search.toLowerCase())) && statusOk && activityOk && pipelineOk && toolOk;
+  }), [data, search, statusFilter, activityFilter, pipelineFilter, toolFilter, metaById]);
 
-  const filtersDirty = Boolean(search || statusFilter !== 'All' || activityFilter !== 'All' || pipelineFilter !== 'All');
+  const filtersDirty = Boolean(search || statusFilter !== 'All' || activityFilter !== 'All' || pipelineFilter !== 'All' || toolFilter !== 'All');
 
   const filteredTotalRows = useMemo(() => filtered.reduce((acc, d) => acc + Number(d.records || 0), 0), [filtered]);
   const filteredTotalBytes = useMemo(() => filtered.reduce((acc, d) => acc + Number(d.bytes || 0), 0), [filtered]);
@@ -494,6 +512,20 @@ export default function Volume() {
                 </select>
               </div>
               <div className="filter-select">
+                <label>Connection / Tool</label>
+                <select
+                  className="select-control"
+                  value={toolFilter}
+                  onChange={e => setToolFilter(e.target.value)}
+                  title="Filter volume by connection or tool (Informatica, Snowflake, dbt, etc.)"
+                >
+                  <option value="All">All Connections</option>
+                  {toolOptions.map(name => (
+                    <option key={name} value={name}>{name}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="filter-select">
                 <label>Status</label>
                 <select
                   className="select-control"
@@ -528,6 +560,7 @@ export default function Volume() {
                     setStatusFilter('All');
                     setActivityFilter('All');
                     setPipelineFilter('All');
+                    setToolFilter('All');
                   }}
                 >
                   Clear filters

@@ -1,9 +1,9 @@
 import { useEffect, useState, useMemo, useCallback } from 'react';
-import { Bell, Plus, CheckCircle, AlertTriangle, Shield, Trash2, Tag, X } from 'lucide-react';
+import { Bell, Plus, CheckCircle, AlertTriangle, Shield, Trash2, Tag, X, Search, RotateCcw, Database } from 'lucide-react';
 import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { DashboardPageSkeleton } from '../components/SkeletonLoaders';
-import { fetchAlerts } from '../api/client';
+import { fetchAlerts, fetchPipelines } from '../api/client';
 
 export default function Alerts() {
   const [alerts, setAlerts] = useState([]);
@@ -13,6 +13,12 @@ export default function Alerts() {
   const [newAlertName, setNewAlertName] = useState('');
   const [newAlertChannel, setNewAlertChannel] = useState('#data-alerts (Slack)');
   const [newAlertCondition, setNewAlertCondition] = useState('');
+
+  // Filters
+  const [search, setSearch] = useState('');
+  const [toolFilter, setToolFilter] = useState('All');
+  const [statusFilter, setStatusFilter] = useState('All');
+  const [toolOptions, setToolOptions] = useState(['Informatica', 'Snowflake', 'dbt', 'MySQL', 'PostgreSQL']);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -70,6 +76,33 @@ export default function Alerts() {
     const set = new Set(alerts.map(a => a.channel || a.notification_channel).filter(Boolean));
     return set.size;
   }, [alerts]);
+
+  const filteredAlerts = useMemo(() => {
+    return alerts.filter(a => {
+      if (statusFilter !== 'All') {
+        const st = String(a.status || 'open').toLowerCase();
+        if (st !== statusFilter.toLowerCase()) return false;
+      }
+      if (toolFilter !== 'All') {
+        const hay = [a.tool, a.tool_name, a.source_tool, a.name, a.pipeline_name, a.condition].filter(Boolean).join(' ').toLowerCase();
+        if (!hay.includes(toolFilter.toLowerCase())) return false;
+      }
+      if (search.trim()) {
+        const q = search.trim().toLowerCase();
+        const hay = [a.name, a.alert_name, a.channel, a.condition, a.pipeline_name, a.severity, a.status].filter(Boolean).join(' ').toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [alerts, statusFilter, toolFilter, search]);
+
+  const filtersActive = Boolean(search.trim()) || statusFilter !== 'All' || toolFilter !== 'All';
+
+  const clearFilters = () => {
+    setSearch('');
+    setStatusFilter('All');
+    setToolFilter('All');
+  };
 
   if (loading && alerts.length === 0) {
     return (
@@ -133,6 +166,50 @@ export default function Alerts() {
             </button>
           </div>
 
+          <div className="filters-bar" style={{ padding: '12px 18px', borderBottom: '1px solid var(--border)' }}>
+            <div className="search-box">
+              <Search size={14} />
+              <input
+                placeholder="Search alerts, channels, conditions…"
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+              />
+            </div>
+            <div className="filter-select">
+              <label>Connection / Tool</label>
+              <select
+                className="select-control"
+                value={toolFilter}
+                onChange={e => setToolFilter(e.target.value)}
+                title="Filter alerts by connection or tool (Informatica, Snowflake, dbt, etc.)"
+              >
+                <option value="All">All Connections</option>
+                {toolOptions.map(t => (
+                  <option key={t} value={t}>{t}</option>
+                ))}
+              </select>
+            </div>
+            <div className="filter-select">
+              <label>Status</label>
+              <select
+                className="select-control"
+                value={statusFilter}
+                onChange={e => setStatusFilter(e.target.value)}
+              >
+                <option value="All">All Statuses</option>
+                <option value="open">Open</option>
+                <option value="acked">Acknowledged</option>
+                <option value="resolved">Resolved</option>
+              </select>
+            </div>
+            {filtersActive && (
+              <button type="button" className="export-btn" style={{ marginLeft: 'auto' }} onClick={clearFilters}>
+                <RotateCcw size={12} style={{ display: 'inline', marginRight: 4 }} />
+                Clear filters
+              </button>
+            )}
+          </div>
+
           <div className="table-wrapper">
             <table className="vithi-table">
               <thead>
@@ -147,13 +224,13 @@ export default function Alerts() {
                 </tr>
               </thead>
               <tbody>
-                {alerts.length === 0 ? (
+                {filteredAlerts.length === 0 ? (
                   <tr>
                     <td colSpan={7} style={{ textAlign: 'center', padding: 28, color: 'var(--text-muted)' }}>
-                      No active alerts in the selected window.
+                      {filtersActive ? 'No alerts match the selected filters.' : 'No active alerts in the selected window.'}
                     </td>
                   </tr>
-                ) : alerts.map(a => {
+                ) : filteredAlerts.map(a => {
                   const s = String(a.status || 'open').toLowerCase();
                   const sev = String(a.severity || 'info').toLowerCase();
                   const sevTone = sev === 'critical' ? 'critical' : (sev === 'high' || sev === 'medium') ? 'warning' : 'info';
