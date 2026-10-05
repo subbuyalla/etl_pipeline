@@ -9,7 +9,7 @@ import {
 import PageHeader from '../../components/PageHeader';
 import LoadingSpinner from '../../components/LoadingSpinner';
 import { DashboardPageSkeleton } from '../../components/SkeletonLoaders';
-import { fetchDataQuality, evaluateDqRules, fetchDqRules } from '../../api/client';
+import { fetchDataQuality, evaluateDqRules, fetchDqRules, fetchPipelines } from '../../api/client';
 import {
   dash, kpiMapFrom, buildDateParams, handleDateChange, TOOLTIP_STYLE,
 } from './obsUtils';
@@ -113,6 +113,7 @@ export default function DataQuality() {
   const [summary, setSummary] = useState(null);
   const [scoreSeries, setScoreSeries] = useState([]);
   const [dqRules, setDqRules] = useState([]);
+  const [pipelineOptions, setPipelineOptions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [evaluating, setEvaluating] = useState(false);
   const [pipelineFilter, setPipelineFilter] = useState('All');
@@ -124,6 +125,17 @@ export default function DataQuality() {
   const [perPage] = useState(10);
   const [headerDatePreset, setHeaderDatePreset] = useState('all');
   const [customDateRange, setCustomDateRange] = useState(null);
+
+  useEffect(() => {
+    let alive = true;
+    fetchPipelines({ preset: 'all' })
+      .then((res) => {
+        if (!alive || !res) return;
+        setPipelineOptions(res.items || res.pipelines || []);
+      })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -168,52 +180,21 @@ export default function DataQuality() {
   };
 
   const kpiMap = useMemo(() => kpiMapFrom(kpis), [kpis]);
-  const totalChecks = kpiMap.checks_run?.value ?? summary?.checks_run ?? data.length;
-  const passedChecks = kpiMap.passed?.value ?? summary?.passed ?? 0;
-  const failedChecks = kpiMap.failed?.value ?? summary?.failed ?? 0;
-  const warnChecks = kpiMap.warning?.value ?? summary?.warn ?? 0;
 
   const distinctDimensions = useMemo(
     () => Array.from(new Set(data.map(d => d.dimension).filter(Boolean))),
     [data],
   );
-  const distinctPipelines = useMemo(
-    () => Array.from(new Set(data.map(d => d.pipeline_name).filter(Boolean))),
-    [data],
-  );
 
-  const donutData = useMemo(() => {
-    const p = charts?.checks_by_status?.passed ?? passedChecks;
-    const w = charts?.checks_by_status?.warning ?? warnChecks;
-    const f = charts?.checks_by_status?.failed ?? failedChecks;
-    const tot = p + w + f || 1;
-    return [
-      { name: 'Passed', value: p, color: '#10B981', pct: `${Math.round((p / tot) * 100)}%` },
-      { name: 'Warning', value: w, color: '#F59E0B', pct: `${Math.round((w / tot) * 100)}%` },
-      { name: 'Failed', value: f, color: '#EF4444', pct: `${Math.round((f / tot) * 100)}%` },
-    ];
-  }, [charts, passedChecks, warnChecks, failedChecks]);
-
-  const dimensionData = useMemo(() => {
-    const byDim = charts?.by_dimension || summary?.by_dimension;
-    if (!byDim) return [];
-    return Object.entries(byDim).map(([dim, val]) => ({
-      dimension: dim.charAt(0).toUpperCase() + dim.slice(1),
-      passed: val.passed ?? 0,
-      warn: val.warn ?? 0,
-      failed: val.failed ?? 0,
-    }));
-  }, [charts, summary]);
-
-  const scoreTrend = useMemo(() => (
-    (scoreSeries || [])
-      .map(p => ({
-        date: p.date || p.timestamp || '',
-        score: Number(p.quality_score ?? p.score ?? 0),
-      }))
-      .filter(p => p.date)
-      .sort((a, b) => String(a.date).localeCompare(String(b.date)))
-  ), [scoreSeries]);
+  const distinctPipelines = useMemo(() => {
+    const set = new Set();
+    pipelineOptions.forEach(p => {
+      const n = p.pipeline_name || p.name;
+      if (n) set.add(n);
+    });
+    data.forEach(d => { if (d.pipeline_name) set.add(d.pipeline_name); });
+    return Array.from(set).sort();
+  }, [pipelineOptions, data]);
 
   const filtered = useMemo(() => {
     const rank = (st) => {
@@ -241,6 +222,72 @@ export default function DataQuality() {
       return matchSearch && matchPipeline && matchDim && matchStatus && matchSource;
     }).sort((a, b) => rank(a.status) - rank(b.status));
   }, [data, search, pipelineFilter, dimensionFilter, statusFilter, sourceFilter]);
+
+  const filtersDirty = Boolean(search || pipelineFilter !== 'All' || dimensionFilter !== 'All' || statusFilter !== 'All' || sourceFilter !== 'All');
+
+  const filteredTotal = filtered.length;
+  const filteredPassed = filtered.filter(d => String(d.status || '').toLowerCase().includes('pass')).length;
+  const filteredFailed = filtered.filter(d => String(d.status || '').toLowerCase().includes('fail')).length;
+  const filteredWarn = filtered.filter(d => String(d.status || '').toLowerCase().includes('warn')).length;
+
+  const totalChecks = filtersDirty ? filteredTotal : (kpiMap.checks_run?.value ?? summary?.checks_run ?? data.length);
+  const passedChecks = filtersDirty ? filteredPassed : (kpiMap.passed?.value ?? summary?.passed ?? 0);
+  const failedChecks = filtersDirty ? filteredFailed : (kpiMap.failed?.value ?? summary?.failed ?? 0);
+  const warnChecks = filtersDirty ? filteredWarn : (kpiMap.warning?.value ?? summary?.warn ?? 0);
+
+  const qualityScoreDisplay = filtersDirty
+    ? (totalChecks > 0 ? `${Math.round((passedChecks / totalChecks) * 100)}%` : '—')
+    : (dash(kpiMap.quality_status?.display) || (totalChecks > 0 ? `${Math.round((passedChecks / totalChecks) * 100)}%` : '—'));
+
+  const donutData = useMemo(() => {
+    const p = filtersDirty ? passedChecks : (charts?.checks_by_status?.passed ?? passedChecks);
+    const w = filtersDirty ? warnChecks : (charts?.checks_by_status?.warning ?? warnChecks);
+    const f = filtersDirty ? failedChecks : (charts?.checks_by_status?.failed ?? failedChecks);
+    const tot = p + w + f || 1;
+    return [
+      { name: 'Passed', value: p, color: '#10B981', pct: `${Math.round((p / tot) * 100)}%` },
+      { name: 'Warning', value: w, color: '#F59E0B', pct: `${Math.round((w / tot) * 100)}%` },
+      { name: 'Failed', value: f, color: '#EF4444', pct: `${Math.round((f / tot) * 100)}%` },
+    ];
+  }, [filtersDirty, passedChecks, warnChecks, failedChecks, charts]);
+
+  const dimensionData = useMemo(() => {
+    if (filtersDirty) {
+      const byDim = {};
+      filtered.forEach(d => {
+        const dim = (d.dimension || 'General').toLowerCase();
+        if (!byDim[dim]) byDim[dim] = { passed: 0, warn: 0, failed: 0 };
+        const st = String(d.status || '').toLowerCase();
+        if (st.includes('fail')) byDim[dim].failed += 1;
+        else if (st.includes('warn')) byDim[dim].warn += 1;
+        else byDim[dim].passed += 1;
+      });
+      return Object.entries(byDim).map(([dim, val]) => ({
+        dimension: dim.charAt(0).toUpperCase() + dim.slice(1),
+        passed: val.passed,
+        warn: val.warn,
+        failed: val.failed,
+      }));
+    }
+    const byDim = charts?.by_dimension || summary?.by_dimension;
+    if (!byDim) return [];
+    return Object.entries(byDim).map(([dim, val]) => ({
+      dimension: dim.charAt(0).toUpperCase() + dim.slice(1),
+      passed: val.passed ?? 0,
+      warn: val.warn ?? 0,
+      failed: val.failed ?? 0,
+    }));
+  }, [filtersDirty, filtered, charts, summary]);
+
+  const scoreTrend = useMemo(() => (
+    (scoreSeries || [])
+      .map(p => ({
+        date: p.date || p.timestamp || '',
+        score: Number(p.quality_score ?? p.score ?? 0),
+      }))
+      .filter(p => p.date)
+      .sort((a, b) => String(a.date).localeCompare(String(a.date)))
+  ), [scoreSeries]);
 
   const paginated = filtered.slice((page - 1) * perPage, page * perPage);
   const totalPages = Math.max(1, Math.ceil(filtered.length / perPage));
@@ -330,7 +377,24 @@ export default function DataQuality() {
                   <option value="platform">Platform SQL</option>
                 </select>
               </div>
-              <button type="button" className="export-btn" style={{ marginLeft: 'auto' }} onClick={handleEvaluateRules} disabled={evaluating}>
+              {filtersDirty && (
+                <button
+                  type="button"
+                  className="export-btn"
+                  style={{ marginLeft: 'auto' }}
+                  onClick={() => {
+                    setSearch('');
+                    setPipelineFilter('All');
+                    setDimensionFilter('All');
+                    setStatusFilter('All');
+                    setSourceFilter('All');
+                    setPage(1);
+                  }}
+                >
+                  Clear filters
+                </button>
+              )}
+              <button type="button" className="export-btn" style={{ marginLeft: filtersDirty ? 0 : 'auto' }} onClick={handleEvaluateRules} disabled={evaluating}>
                 <Play size={13} className={evaluating ? 'spin' : ''} />
                 {evaluating ? 'Running…' : 'Run DQ checks'}
               </button>
@@ -342,9 +406,9 @@ export default function DataQuality() {
                   <div className="kpi-icon" style={{ background: '#ECFDF5', color: '#10B981' }}><Shield size={18} /></div>
                   <span className="kpi-label">Quality score</span>
                 </div>
-                <div className="kpi-value" style={{ color: '#10B981' }}>{dash(kpiMap.quality_status?.display)}</div>
+                <div className="kpi-value" style={{ color: '#10B981' }}>{qualityScoreDisplay}</div>
                 <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
-                  {passedChecks} of {totalChecks} passing
+                  {filtersDirty ? `${passedChecks} of ${totalChecks} passing (filtered)` : `${passedChecks} of ${totalChecks} passing`}
                 </div>
               </div>
               <div className="kpi-card">

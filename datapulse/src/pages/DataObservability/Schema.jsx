@@ -6,31 +6,56 @@ import {
 import PageHeader from '../../components/PageHeader';
 import LoadingSpinner from '../../components/LoadingSpinner';
 import { DashboardPageSkeleton } from '../../components/SkeletonLoaders';
-import { fetchSchema } from '../../api/client';
+import { fetchSchema, fetchPipelines } from '../../api/client';
 import {
   dash, kpiMapFrom, buildDateParams, handleDateChange, TOOLTIP_STYLE,
 } from './obsUtils';
 
 export default function Schema() {
   const [schemaData, setSchemaData] = useState(null);
+  const [pipelineOptions, setPipelineOptions] = useState([]);
+  const [pipelineFilter, setPipelineFilter] = useState('All');
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [headerDatePreset, setHeaderDatePreset] = useState('all');
   const [customDateRange, setCustomDateRange] = useState(null);
 
+  useEffect(() => {
+    let alive = true;
+    fetchPipelines({ preset: 'all' })
+      .then((res) => {
+        if (!alive || !res) return;
+        setPipelineOptions(res.items || res.pipelines || []);
+      })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
+
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
       const params = buildDateParams(headerDatePreset, customDateRange);
+      if (pipelineFilter && pipelineFilter !== 'All') {
+        params.pipeline_name = pipelineFilter;
+      }
       setSchemaData(await fetchSchema(params));
     } catch (e) {
       console.error(e);
     } finally {
       setLoading(false);
     }
-  }, [headerDatePreset, customDateRange]);
+  }, [headerDatePreset, customDateRange, pipelineFilter]);
 
   useEffect(() => { loadData(); }, [loadData]);
+
+  const availablePipelines = useMemo(() => {
+    const names = new Set();
+    pipelineOptions.forEach(p => {
+      const n = p.pipeline_name || p.name;
+      if (n) names.add(n);
+    });
+    return Array.from(names).sort();
+  }, [pipelineOptions]);
 
   const kpi = useMemo(() => kpiMapFrom(schemaData?.kpis), [schemaData]);
   const changes = Number(kpi.schema_changes?.value ?? schemaData?.summary?.changes ?? 0);
@@ -38,7 +63,26 @@ export default function Schema() {
   const events = schemaData?.items || [];
   const meta = schemaData?.meta;
 
+  const filtersDirty = Boolean(search || (pipelineFilter && pipelineFilter !== 'All'));
+  const filtered = useMemo(() => events.filter((ev) => {
+    if (!search) return true;
+    const hay = [ev.table_name, ev.column_name, ev.change_type, ev.impact].join(' ').toLowerCase();
+    return hay.includes(search.toLowerCase());
+  }), [events, search]);
+
+  const filteredChanges = filtered.length;
+  const filteredBreaking = filtered.filter(ev => String(ev.impact || '').toLowerCase() === 'breaking').length;
+
+  const displayChanges = filtersDirty ? filteredChanges : changes;
+  const displayBreaking = filtersDirty ? filteredBreaking : breaking;
+
   const impactChart = useMemo(() => {
+    if (filtersDirty) {
+      return [
+        { name: 'non breaking', count: Math.max(0, displayChanges - displayBreaking) },
+        { name: 'breaking', count: displayBreaking },
+      ];
+    }
     const rows = schemaData?.charts?.by_impact;
     if (Array.isArray(rows) && rows.length) {
       return rows.map(r => ({
@@ -50,13 +94,7 @@ export default function Schema() {
       { name: 'non breaking', count: Math.max(0, changes - breaking) },
       { name: 'breaking', count: breaking },
     ];
-  }, [schemaData, changes, breaking]);
-
-  const filtered = useMemo(() => events.filter((ev) => {
-    if (!search) return true;
-    const hay = [ev.table_name, ev.column_name, ev.change_type, ev.impact].join(' ').toLowerCase();
-    return hay.includes(search.toLowerCase());
-  }), [events, search]);
+  }, [filtersDirty, displayChanges, displayBreaking, schemaData, changes, breaking]);
 
   return (
     <div className="fade-in">
@@ -70,19 +108,19 @@ export default function Schema() {
       <div className="page-body">
         {loading ? <DashboardPageSkeleton kpiCount={3} chartCount={0} tableRows={6} tableCols={5} /> : (
           <>
-            {breaking > 0 ? (
+            {displayBreaking > 0 ? (
               <div className="obs-alert is-bad">
                 <AlertTriangle size={18} />
                 <div>
-                  <strong>{breaking} breaking change{breaking === 1 ? '' : 's'}.</strong>
+                  <strong>{displayBreaking} breaking change{displayBreaking === 1 ? '' : 's'}.</strong>
                   {' '}These can break dashboards or downstream jobs.
                 </div>
               </div>
-            ) : changes > 0 ? (
+            ) : displayChanges > 0 ? (
               <div className="obs-alert is-warn">
                 <Layout size={18} />
                 <div>
-                  <strong>{changes} schema change{changes === 1 ? '' : 's'} found.</strong>
+                  <strong>{displayChanges} schema change{displayChanges === 1 ? '' : 's'} found.</strong>
                   {' '}Review the history list below.
                 </div>
               </div>
@@ -109,6 +147,43 @@ export default function Schema() {
               </div>
             </div>
 
+            <div className="filters-bar">
+              <div className="search-box">
+                <Search size={14} />
+                <input
+                  placeholder="Search table or column…"
+                  value={search}
+                  onChange={e => setSearch(e.target.value)}
+                />
+              </div>
+              <div className="filter-select">
+                <label>Pipeline</label>
+                <select
+                  className="select-control"
+                  value={pipelineFilter}
+                  onChange={e => setPipelineFilter(e.target.value)}
+                >
+                  <option value="All">All pipelines</option>
+                  {availablePipelines.map(name => (
+                    <option key={name} value={name}>{name}</option>
+                  ))}
+                </select>
+              </div>
+              {filtersDirty && (
+                <button
+                  type="button"
+                  className="export-btn"
+                  style={{ marginLeft: 'auto' }}
+                  onClick={() => {
+                    setSearch('');
+                    setPipelineFilter('All');
+                  }}
+                >
+                  Clear filters
+                </button>
+              )}
+            </div>
+
             <div className="kpi-grid-4">
               <div className="kpi-card">
                 <div className="kpi-card-header">
@@ -129,15 +204,15 @@ export default function Schema() {
                   <div className="kpi-icon" style={{ background: '#FFFBEB', color: '#F59E0B' }}><Layout size={18} /></div>
                   <span className="kpi-label">Changes found</span>
                 </div>
-                <div className="kpi-value">{dash(kpi.schema_changes?.display)}</div>
+                <div className="kpi-value">{dash(displayChanges)}</div>
               </div>
               <div className="kpi-card">
                 <div className="kpi-card-header">
                   <div className="kpi-icon" style={{ background: '#FEF2F2', color: '#EF4444' }}><AlertTriangle size={18} /></div>
                   <span className="kpi-label">Breaking changes</span>
                 </div>
-                <div className="kpi-value" style={{ color: breaking ? '#EF4444' : '#10B981' }}>
-                  {dash(kpi.breaking_changes?.display)}
+                <div className="kpi-value" style={{ color: displayBreaking ? '#EF4444' : '#10B981' }}>
+                  {dash(displayBreaking)}
                 </div>
               </div>
             </div>
@@ -169,19 +244,6 @@ export default function Schema() {
                   <span className="card-subtitle">Column / type changes for this time range</span>
                 </div>
               </div>
-
-              {events.length > 0 && (
-                <div className="filters-bar" style={{ border: 'none', background: 'transparent', padding: '0 0 12px' }}>
-                  <div className="search-box">
-                    <Search size={14} />
-                    <input
-                      placeholder="Search table or column…"
-                      value={search}
-                      onChange={e => setSearch(e.target.value)}
-                    />
-                  </div>
-                </div>
-              )}
 
               {filtered.length === 0 ? (
                 <div className="obs-simple-empty" style={{ padding: '40px 16px' }}>

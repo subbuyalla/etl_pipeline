@@ -200,6 +200,9 @@ export default function Volume() {
     setLoading(true);
     try {
       const params = buildDateParams(headerDatePreset, customDateRange);
+      if (pipelineFilter && pipelineFilter !== 'All') {
+        params.pipeline_name = pipelineFilter;
+      }
       const [volRes, monRes, pipeRes] = await Promise.allSettled([
         fetchVolume(params),
         fetchMonitors(),
@@ -241,7 +244,7 @@ export default function Volume() {
     } finally {
       setLoading(false);
     }
-  }, [headerDatePreset, customDateRange]);
+  }, [headerDatePreset, customDateRange, pipelineFilter]);
 
   useEffect(() => { loadData(); }, [loadData]);
 
@@ -260,28 +263,14 @@ export default function Volume() {
 
   const pipelineNames = useMemo(() => {
     const names = new Set();
+    pipelineMeta.forEach(p => {
+      const n = p.pipeline_name || p.name;
+      if (n) names.add(n);
+    });
     data.forEach(d => { if (d.pipeline_name) names.add(d.pipeline_name); });
     byPipeline.forEach(p => { if (p.pipeline_name) names.add(p.pipeline_name); });
     return [...names].sort();
-  }, [data, byPipeline]);
-
-  const trend = useMemo(() => buildVolumeTrend(series, apiRange), [series, apiRange]);
-  const hasTrendSignal = trend.some(p => Number(p.records) > 0 || Number(p.bytes) > 0);
-
-  const donutData = useMemo(() => {
-    const source = byPipeline.length
-      ? byPipeline
-      : data.filter(d => Number(d.records) > 0 || Number(d.bytes) > 0);
-    return source.map((p, i) => ({
-      name: p.pipeline_name || p.name || '—',
-      value: Number(p.bytes ?? 0) || Number(p.records ?? 0),
-      records: Number(p.records ?? 0),
-      bytes: Number(p.bytes ?? 0),
-      share: p.share_pct ?? null,
-      color: PIPELINE_COLORS[i % PIPELINE_COLORS.length],
-      bytes_display: formatBytes(p.bytes) || (p.bytes_display ?? '—'),
-    })).filter(d => d.value > 0);
-  }, [byPipeline, data]);
+  }, [pipelineMeta, data, byPipeline]);
 
   const filtered = useMemo(() => data.filter((d) => {
     const st = String(d.status_key || d.status || '').toLowerCase();
@@ -298,24 +287,67 @@ export default function Volume() {
     return (!search || hay.includes(search.toLowerCase())) && statusOk && activityOk && pipelineOk;
   }), [data, search, statusFilter, activityFilter, pipelineFilter]);
 
+  const filtersDirty = Boolean(search || statusFilter !== 'All' || activityFilter !== 'All' || pipelineFilter !== 'All');
+
+  const filteredTotalRows = useMemo(() => filtered.reduce((acc, d) => acc + Number(d.records || 0), 0), [filtered]);
+  const filteredTotalBytes = useMemo(() => filtered.reduce((acc, d) => acc + Number(d.bytes || 0), 0), [filtered]);
+  const filteredRunsCount = useMemo(() => filtered.reduce((acc, d) => acc + Number(d.runs || 0), 0), [filtered]);
+  const filteredActiveCount = useMemo(() => filtered.filter(d => Number(d.records || 0) > 0).length, [filtered]);
+
+  const displayedBytes = filtersDirty
+    ? (formatBytes(filteredTotalBytes) || '0 B')
+    : (kpi.data_received?.display || formatBytes(totalBytes) || '—');
+
+  const displayedRows = filtersDirty
+    ? filteredTotalRows.toLocaleString()
+    : (kpi.records_received?.display ?? (summary?.total_rows != null ? Number(summary.total_rows).toLocaleString() : '—'));
+
+  const displayedActive = filtersDirty
+    ? `${filteredActiveCount} / ${filtered.length}`
+    : (kpi.pipelines_active?.display || `${filteredActiveCount} / ${filtered.length}`);
+
+  const displayedRuns = filtersDirty
+    ? filteredRunsCount.toLocaleString()
+    : (kpi.runs?.display || filteredRunsCount.toLocaleString());
+
+  const trend = useMemo(() => {
+    if (filtersDirty && filtered.length === 0) return [];
+    return buildVolumeTrend(series, apiRange);
+  }, [series, apiRange, filtersDirty, filtered]);
+  const hasTrendSignal = trend.some(p => Number(p.records) > 0 || Number(p.bytes) > 0);
+
+  const donutData = useMemo(() => {
+    const source = (filtersDirty ? filtered : (byPipeline.length ? byPipeline : data))
+      .filter(d => Number(d.records) > 0 || Number(d.bytes) > 0);
+    const sumBytes = source.reduce((acc, r) => acc + Number(r.bytes || 0), 0);
+    return source.map((p, i) => {
+      const bytes = Number(p.bytes ?? 0);
+      const share = sumBytes > 0 ? Math.round((bytes / sumBytes) * 1000) / 10 : (p.share_pct ?? 0);
+      return {
+        name: p.pipeline_name || p.name || '—',
+        value: bytes || Number(p.records ?? 0),
+        records: Number(p.records ?? 0),
+        bytes,
+        share,
+        color: PIPELINE_COLORS[i % PIPELINE_COLORS.length],
+        bytes_display: formatBytes(bytes) || (p.bytes_display ?? '—'),
+      };
+    }).filter(d => d.value > 0);
+  }, [filtersDirty, filtered, byPipeline, data]);
+
   const breakByPipeline = useMemo(() => {
-    if (byPipeline.length) {
-      return aggregateShares(byPipeline.map(p => ({
-        name: p.pipeline_name || '—',
-        bytes: p.bytes,
-        records: p.records,
-      })));
-    }
-    return aggregateShares(data.map(d => ({
-      name: d.pipeline_name || '—',
-      bytes: d.bytes,
-      records: d.records,
+    const source = filtersDirty ? filtered : (byPipeline.length ? byPipeline : data);
+    return aggregateShares(source.map(p => ({
+      name: p.pipeline_name || '—',
+      bytes: p.bytes,
+      records: p.records,
     })));
-  }, [byPipeline, data]);
+  }, [filtersDirty, filtered, byPipeline, data]);
 
   const breakBySource = useMemo(() => {
     const buckets = {};
-    data.forEach((d) => {
+    const source = filtersDirty ? filtered : data;
+    source.forEach((d) => {
       const meta = metaById[d.pipeline_id];
       const name = meta?.source_tool || meta?.source?.tool || 'Unknown source';
       if (!buckets[name]) buckets[name] = { name, bytes: 0, records: 0 };
@@ -323,22 +355,25 @@ export default function Volume() {
       buckets[name].records += Number(d.records || 0);
     });
     return aggregateShares(Object.values(buckets));
-  }, [data, metaById]);
+  }, [filtersDirty, filtered, data, metaById]);
 
   const breakByDataset = useMemo(() => {
     const buckets = {};
-    recentRuns.forEach((run) => {
-      (run.assets || [])
-        .filter(a => String(a.asset_role || '').toUpperCase() === 'TARGET')
-        .forEach((a) => {
-          const name = a.object_name || a.dataset_id || 'Unknown dataset';
-          if (!buckets[name]) buckets[name] = { name, bytes: 0, records: 0 };
-          buckets[name].bytes += Number(a.size_bytes || 0);
-          buckets[name].records += Number(a.row_count || 0);
-        });
-    });
+    const allowedPipelineIds = new Set(filtered.map(d => d.pipeline_id));
+    recentRuns
+      .filter(run => !filtersDirty || allowedPipelineIds.has(run.pipeline_id))
+      .forEach((run) => {
+        (run.assets || [])
+          .filter(a => String(a.asset_role || '').toUpperCase() === 'TARGET')
+          .forEach((a) => {
+            const name = a.object_name || a.dataset_id || 'Unknown dataset';
+            if (!buckets[name]) buckets[name] = { name, bytes: 0, records: 0 };
+            buckets[name].bytes += Number(a.size_bytes || 0);
+            buckets[name].records += Number(a.row_count || 0);
+          });
+      });
     return aggregateShares(Object.values(buckets));
-  }, [recentRuns]);
+  }, [recentRuns, filtersDirty, filtered]);
 
   const breakdownRows = breakTab === 'source'
     ? breakBySource
@@ -355,26 +390,23 @@ export default function Volume() {
     return true;
   }), [recentRuns, pipelineFilter, search]);
 
-  const unhealthy = data.filter(d => {
+  const unhealthy = (filtersDirty ? filtered : data).filter(d => {
     const tone = statusTone(d.status_key || d.status);
     return tone === 'warn' || tone === 'crit';
   }).length;
   const critPct = volumeMonitors.find(m => m.config?.crit_pct != null)?.config?.crit_pct;
-  const emptyWindow = totalRows === 0 && data.length === 0;
+  const emptyWindow = filtersDirty ? filtered.length === 0 : (totalRows === 0 && data.length === 0);
 
-  const bytesLabel = kpi.data_received?.display
-    || formatBytes(totalBytes)
-    || '—';
-  const rowsLabel = kpi.records_received?.display
-    ?? (summary?.total_rows != null ? String(summary.total_rows) : null);
+  const bytesLabel = displayedBytes;
+  const rowsLabel = displayedRows;
 
-  const activeDisplay = String(kpi.pipelines_active?.display || '');
+  const activeDisplay = String(displayedActive || '');
   const activeParts = activeDisplay.match(/(\d+)\s*\/\s*(\d+)/);
-  const activeHint = activeParts
-    ? `${activeParts[1]} with volume, ${Math.max(0, Number(activeParts[2]) - Number(activeParts[1]))} inactive`
-    : 'with volume in this range';
-
-  const filtersDirty = search || statusFilter !== 'All' || activityFilter !== 'All' || pipelineFilter !== 'All';
+  const activeHint = filtersDirty
+    ? `${filteredActiveCount} active with volume (${filtered.length} total)`
+    : (activeParts
+      ? `${activeParts[1]} with volume, ${Math.max(0, Number(activeParts[2]) - Number(activeParts[1]))} inactive`
+      : 'with volume in this range');
 
   const targetFromRun = (run) => {
     const assets = run.assets || [];
@@ -509,25 +541,25 @@ export default function Volume() {
                   <div className="kpi-icon" style={{ background: '#EEF2FF', color: '#6366F1' }}><Database size={18} /></div>
                   <span className="kpi-label">Data received</span>
                 </div>
-                <div className="kpi-value">{dash(kpi.data_received?.display)}</div>
-                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>vs previous period</div>
+                <div className="kpi-value">{dash(displayedBytes)}</div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{filtersDirty ? 'in filtered scope' : 'vs previous period'}</div>
               </div>
               <div className="kpi-card">
                 <div className="kpi-card-header">
                   <div className="kpi-icon" style={{ background: '#ECFDF5', color: '#10B981' }}><Activity size={18} /></div>
                   <span className="kpi-label">Records received</span>
                 </div>
-                <div className="kpi-value" style={{ color: totalRows > 0 ? '#10B981' : undefined }}>
-                  {dash(kpi.records_received?.display)}
+                <div className="kpi-value" style={{ color: (filtersDirty ? filteredTotalRows : totalRows) > 0 ? '#10B981' : undefined }}>
+                  {dash(displayedRows)}
                 </div>
-                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>vs previous period</div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{filtersDirty ? 'in filtered scope' : 'vs previous period'}</div>
               </div>
               <div className="kpi-card">
                 <div className="kpi-card-header">
                   <div className="kpi-icon" style={{ background: '#EFF6FF', color: '#3B82F6' }}><GitBranch size={18} /></div>
                   <span className="kpi-label">Pipelines active</span>
                 </div>
-                <div className="kpi-value">{dash(kpi.pipelines_active?.display)}</div>
+                <div className="kpi-value">{dash(displayedActive)}</div>
                 <div style={{
                   fontSize: 11,
                   marginTop: 2,
@@ -541,8 +573,8 @@ export default function Volume() {
                   <div className="kpi-icon" style={{ background: '#FFFBEB', color: '#F59E0B' }}><TrendingUp size={18} /></div>
                   <span className="kpi-label">Runs</span>
                 </div>
-                <div className="kpi-value">{dash(kpi.runs?.display)}</div>
-                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>in selected range</div>
+                <div className="kpi-value">{dash(displayedRuns)}</div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{filtersDirty ? 'in filtered scope' : 'in selected range'}</div>
               </div>
             </div>
 

@@ -10,7 +10,7 @@ import {
 import LoadingSpinner from '../../components/LoadingSpinner';
 import { DashboardPageSkeleton } from '../../components/SkeletonLoaders';
 import ConnectorLogo from '../../components/ConnectorLogo';
-import { fetchFreshness, clearClientCache } from '../../api/client';
+import { fetchFreshness, fetchPipelines, clearClientCache } from '../../api/client';
 import { dash, kpiMapFrom } from './obsUtils';
 
 const fmtDate = (str) => {
@@ -60,9 +60,10 @@ export default function Freshness() {
   const [kpis, setKpis] = useState([]);
   const [summary, setSummary] = useState(null);
   const [meta, setMeta] = useState(null);
+  const [pipelineOptions, setPipelineOptions] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  // Top Filter Bar State (matching user mockup Image 2)
+  // Top Filter Bar State
   const [datePreset, setDatePreset] = useState('30d');
   const [selectedPipelineFilter, setSelectedPipelineFilter] = useState('all');
   const [startDate, setStartDate] = useState(() => {
@@ -84,6 +85,19 @@ export default function Freshness() {
   const [selectedPipelineId, setSelectedPipelineId] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
 
+  // Pre-load available pipelines for the dropdown
+  useEffect(() => {
+    let alive = true;
+    fetchPipelines({ preset: 'all' })
+      .then((res) => {
+        if (!alive || !res) return;
+        const list = res.items || res.pipelines || [];
+        setPipelineOptions(list);
+      })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
+
   const handleTopRefresh = async () => {
     setRefreshing(true);
     try {
@@ -103,8 +117,14 @@ export default function Freshness() {
       if (datePreset === 'custom' && startDate && endDate) {
         params.start_date = `${startDate} ${startTime}:00`;
         params.end_date = `${endDate} ${endTime}:00`;
-      } else if (datePreset) {
+      } else if (datePreset && datePreset !== 'all') {
         params.preset = datePreset;
+      } else {
+        params.preset = 'all';
+      }
+
+      if (selectedPipelineFilter && selectedPipelineFilter !== 'all') {
+        params.pipeline_id = selectedPipelineFilter;
       }
 
       const res = await fetchFreshness(params);
@@ -114,14 +134,6 @@ export default function Freshness() {
       setSummary(res?.summary || null);
       setMeta(res?.meta || null);
 
-      if (res?.meta?.as_of) {
-        const asOfDt = new Date(res.meta.as_of);
-        setEndDate(toISODate(asOfDt));
-        const prev30 = new Date(asOfDt.getTime() - 30 * 24 * 60 * 60 * 1000);
-        setStartDate(toISODate(prev30));
-        setEndTime(asOfDt.toTimeString().slice(0, 5));
-      }
-
       if (items.length > 0 && (!selectedPipelineId || !items.some(i => i.pipeline_id === selectedPipelineId))) {
         setSelectedPipelineId(items[0].pipeline_id);
       }
@@ -130,21 +142,16 @@ export default function Freshness() {
     } finally {
       setLoading(false);
     }
-  }, [datePreset, startDate, endDate, startTime, endTime, selectedPipelineId]);
+  }, [datePreset, startDate, endDate, startTime, endTime, selectedPipelineFilter, selectedPipelineId]);
 
   useEffect(() => {
     loadData();
   }, [loadData]);
 
   const handleApplyFilters = () => {
+    setCurrentPage(1);
     loadData();
   };
-
-  const kpi = useMemo(() => kpiMapFrom(kpis), [kpis]);
-  const staleCount = Number(kpi.stale?.value ?? summary?.stale ?? 0);
-  const staleDisplay = kpi.stale?.display || `${staleCount} (100.0%)`;
-  const freshDisplay = kpi.fresh?.display || '0 (0%)';
-  const delayedDisplay = kpi.delayed?.display || '0 (0%)';
 
   // Distinct pipelines deduplicated by pipeline_id
   const uniqueData = useMemo(() => {
@@ -157,7 +164,20 @@ export default function Freshness() {
     });
   }, [data]);
 
-  // Filtered rows for the table
+  // Combined available pipelines list for dropdown
+  const availablePipelines = useMemo(() => {
+    const map = new Map();
+    (pipelineOptions || []).forEach(p => {
+      const pid = p.pipeline_id || p.id;
+      if (pid) map.set(pid, p.pipeline_name || p.name || pid);
+    });
+    (uniqueData || []).forEach(p => {
+      if (p.pipeline_id && !map.has(p.pipeline_id)) map.set(p.pipeline_id, p.pipeline_name || p.name);
+    });
+    return Array.from(map.entries()).map(([id, name]) => ({ id, name }));
+  }, [pipelineOptions, uniqueData]);
+
+  // Filtered rows for the table and all screen metrics
   const filtered = useMemo(() => uniqueData.filter((d) => {
     const isNeverSynced = d.current_lag_hours == null && !d.last_updated_at && !d.run_id;
     const st = isNeverSynced ? 'never_synced' : String(d.status_key || d.status || '').toLowerCase();
@@ -167,6 +187,20 @@ export default function Freshness() {
     const matchesPipeline = selectedPipelineFilter === 'all' || d.pipeline_id === selectedPipelineFilter;
     return matchesSearch && matchesStatus && matchesPipeline;
   }), [uniqueData, search, statusFilter, selectedPipelineFilter]);
+
+  // Dynamically derive KPIs from the active filtered scope so the whole screen updates
+  const totalInScope = filtered.length;
+  const freshCount = filtered.filter(d => (d.status_key || '').toLowerCase() === 'fresh').length;
+  const delayedCount = filtered.filter(d => (d.status_key || '').toLowerCase() === 'delayed').length;
+  const staleCount = filtered.filter(d => (d.status_key || '').toLowerCase() === 'stale' || (!d.status_key && !d.last_updated_at)).length;
+
+  const freshPct = totalInScope > 0 ? ((freshCount / totalInScope) * 100).toFixed(1) : '0';
+  const delayedPct = totalInScope > 0 ? ((delayedCount / totalInScope) * 100).toFixed(1) : '0';
+  const stalePct = totalInScope > 0 ? ((staleCount / totalInScope) * 100).toFixed(1) : '0';
+
+  const freshDisplay = `${freshCount} (${freshPct}%)`;
+  const delayedDisplay = `${delayedCount} (${delayedPct}%)`;
+  const staleDisplay = `${staleCount} (${stalePct}%)`;
 
   // Paginated items
   const paginatedItems = useMemo(() => {
@@ -178,10 +212,11 @@ export default function Freshness() {
 
   // Selected pipeline for inspector details panel
   const selectedItem = useMemo(() => {
-    return uniqueData.find(d => d.pipeline_id === selectedPipelineId) || uniqueData[0] || null;
-  }, [uniqueData, selectedPipelineId]);
+    if (!filtered.length) return null;
+    return filtered.find(d => d.pipeline_id === selectedPipelineId) || filtered[0] || null;
+  }, [filtered, selectedPipelineId]);
 
-  // Generate dynamic Freshness Trend series
+  // Generate dynamic Freshness Trend series based on selectedItem
   const trendData = useMemo(() => {
     const points = [];
     const asOfDate = meta?.as_of ? new Date(meta.as_of) : new Date();
@@ -295,13 +330,16 @@ export default function Freshness() {
             <GitBranch size={13} color="#64748B" />
             <select
               value={selectedPipelineFilter}
-              onChange={(e) => setSelectedPipelineFilter(e.target.value)}
+              onChange={(e) => {
+                setSelectedPipelineFilter(e.target.value);
+                setCurrentPage(1);
+              }}
               style={{ border: 'none', background: 'transparent', outline: 'none', fontSize: 12, cursor: 'pointer', fontWeight: 500 }}
             >
               <option value="all">All Pipelines</option>
-              {uniqueData.map(p => (
-                <option key={p.pipeline_id} value={p.pipeline_id}>
-                  {p.pipeline_name}
+              {availablePipelines.map(p => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
                 </option>
               ))}
             </select>
