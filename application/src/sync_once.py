@@ -62,21 +62,34 @@ def _merge_run_table_filters(
     return merged
 
 
-def _dbt_run_extras(
-    dbt: Any, run_id: str, *, failed_nodes: list | None = None
+def _etl_run_extras(
+    etl: Any, run_id: str, *, external_run_id: str | None = None, failed_nodes: list | None = None
 ) -> tuple[list[dict], list[dict], dict[str, str]]:
-    """Pull dbt test results, manifest lineage edges, compiled SQL for failed nodes."""
+    """
+    Pull test/check results, lineage edges, and compiled SQL from any ETL connector.
+
+    - fetch_test_results  → works for dbt AND Informatica (and any future connector)
+    - fetch_manifest_edges / fetch_compiled_sql_for_nodes → dbt-only, skipped silently
+    For connectors like Informatica the activityLog detail API uses the original
+    external_run_id (e.g. "12345"), not the mapped UUID stored in run_log["id"].
+    """
     tests: list[dict] = []
     edges: list[dict] = []
     compiled: dict[str, str] = {}
+
+    # Use the connector's own run ID if provided (Informatica needs the original log ID)
+    check_run_id = external_run_id or run_id
+
     try:
-        if hasattr(dbt, "fetch_test_results"):
-            tests = dbt.fetch_test_results(run_id) or []
+        if hasattr(etl, "fetch_test_results"):
+            tests = etl.fetch_test_results(check_run_id) or []
+            if tests:
+                print(f"INFO etl_run_extras: {len(tests)} check result(s) from {type(etl).__name__}")
     except Exception as exc:
-        print("WARN dbt test results:", exc)
+        print("WARN etl test results:", exc)
     try:
-        if hasattr(dbt, "fetch_manifest_edges"):
-            edges = dbt.fetch_manifest_edges(run_id) or []
+        if hasattr(etl, "fetch_manifest_edges"):
+            edges = etl.fetch_manifest_edges(run_id) or []
     except Exception as exc:
         print("WARN dbt manifest edges:", exc)
     try:
@@ -88,11 +101,15 @@ def _dbt_run_extras(
                     node_ids.append(str(uid))
             elif node:
                 node_ids.append(str(node))
-        if node_ids and hasattr(dbt, "fetch_compiled_sql_for_nodes"):
-            compiled = dbt.fetch_compiled_sql_for_nodes(run_id, node_ids) or {}
+        if node_ids and hasattr(etl, "fetch_compiled_sql_for_nodes"):
+            compiled = etl.fetch_compiled_sql_for_nodes(run_id, node_ids) or {}
     except Exception as exc:
         print("WARN dbt compiled sql:", exc)
     return tests, edges, compiled
+
+
+# Back-compat alias so any existing callers still work
+_dbt_run_extras = _etl_run_extras
 
 
 def _enrich_failed_nodes_with_compiled(
@@ -630,8 +647,19 @@ def run_sync_once(
         )
         run_id = run_log["id"]
         failed_nodes_raw = run_log.get("failed_nodes") or []
-        dbt_tests, lineage_edges, compiled_sql = _dbt_run_extras(
-            dbt, str(run_id), failed_nodes=failed_nodes_raw
+        # external_run_id is the original connector-native ID (e.g. Informatica activityLog id).
+        # Informatica's fetch_test_results calls /api/v2/activity/activityLog/{id} so it must
+        # receive the original numeric/string ID, not the mapped UUID run_log["id"].
+        external_run_id = str(
+            chosen_raw.get("external_run_id")
+            or chosen_raw.get("run_id")
+            or chosen_raw.get("id")
+            or run_id
+        )
+        dbt_tests, lineage_edges, compiled_sql = _etl_run_extras(
+            dbt, str(run_id),
+            external_run_id=external_run_id,
+            failed_nodes=failed_nodes_raw,
         )
         enriched_nodes = _enrich_failed_nodes_with_compiled(failed_nodes_raw, compiled_sql)
         run_log["failed_nodes"] = enriched_nodes
