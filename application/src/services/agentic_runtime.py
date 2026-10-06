@@ -468,19 +468,52 @@ class AgenticRuntime:
             ],
         }
 
-    def run_llm_react_loop(self, query: str, context: dict[str, Any], history: list[dict[str, str]] | None = None) -> dict[str, Any] | None:
-        """Execute a full iterative ReAct tool-use loop with self-correction using an LLM."""
+    def run_llm_react_loop(self, query: str, context: dict[str, Any], history: list[dict[str, str]] | None = None) -> dict[str, Any]:
+        """Execute a full iterative ReAct tool-use loop with self-correction using an LLM (No rule-based fallback)."""
+        gemini_key = os.getenv("GEMINI_API_KEY")
+        groq_key = os.getenv("GROQ_API_KEY")
         openrouter_key = os.getenv("OPENROUTER_API_KEY")
-        api_key = openrouter_key or os.getenv("OPENAI_API_KEY") or os.getenv("COPILOT_API_KEY")
-        if openrouter_key and not os.getenv("OPENAI_API_BASE") and not os.getenv("COPILOT_API_BASE"):
-            api_base = "https://openrouter.ai/api/v1"
-            model = os.getenv("OPENROUTER_MODEL") or "meta-llama/llama-3.3-70b-instruct:free"
-        else:
-            api_base = os.getenv("OPENAI_API_BASE") or os.getenv("COPILOT_API_BASE") or "https://api.openai.com/v1"
-            model = os.getenv("COPILOT_MODEL", "gpt-4o-mini")
+        openai_key = os.getenv("OPENAI_API_KEY")
+        copilot_key = os.getenv("COPILOT_API_KEY")
 
-        if not api_key and "localhost" not in api_base and "127.0.0.1" not in api_base:
-            return None
+        if gemini_key:
+            api_key = gemini_key
+            api_base = os.getenv("GEMINI_API_BASE") or "https://generativelanguage.googleapis.com/v1beta/openai"
+            model = os.getenv("GEMINI_MODEL") or "gemini-2.0-flash"
+        elif groq_key:
+            api_key = groq_key
+            api_base = os.getenv("GROQ_API_BASE") or "https://api.groq.com/openai/v1"
+            model = os.getenv("GROQ_MODEL") or "llama-3.3-70b-versatile"
+        elif openrouter_key:
+            api_key = openrouter_key
+            api_base = os.getenv("OPENAI_API_BASE") or os.getenv("COPILOT_API_BASE") or "https://openrouter.ai/api/v1"
+            model = os.getenv("OPENROUTER_MODEL") or "meta-llama/llama-3.3-70b-instruct:free"
+        elif openai_key or copilot_key:
+            api_key = openai_key or copilot_key
+            api_base = os.getenv("OPENAI_API_BASE") or os.getenv("COPILOT_API_BASE") or "https://api.openai.com/v1"
+            model = os.getenv("COPILOT_MODEL") or "gpt-4o-mini"
+        else:
+            api_key = None
+            api_base = None
+            model = None
+
+        if not api_key:
+            return {
+                "ok": False,
+                "session_id": self.session_id,
+                "response": (
+                    "⚠️ **LLM API Key Required (Fallback Removed):**\n\n"
+                    "The rule-based fallback has been completely disabled as requested. "
+                    "The Copilot is now in 100% LLM mode.\n\n"
+                    "Please provide an active API key in root `.env`:\n"
+                    "- `OPENROUTER_API_KEY=sk-or-v1-...`\n"
+                    "- `GEMINI_API_KEY=AIzaSy...`\n"
+                    "- `GROQ_API_KEY=gsk_...`\n"
+                    "- `OPENAI_API_KEY=sk-...`"
+                ),
+                "thought_trace": [],
+                "actions": [],
+            }
 
         try:
             import requests
@@ -498,7 +531,7 @@ class AgenticRuntime:
 
             headers = {
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {api_key or 'ollama'}",
+                "Authorization": f"Bearer {api_key}",
                 "HTTP-Referer": "http://localhost:5173",
                 "X-Title": "DataPulse Copilot",
             }
@@ -513,10 +546,22 @@ class AgenticRuntime:
                     "temperature": 0.1,
                     "max_tokens": 800,
                 }
-                res = requests.post(f"{api_base.rstrip('/')}/chat/completions", headers=headers, json=payload, timeout=12)
+                res = requests.post(f"{api_base.rstrip('/')}/chat/completions", headers=headers, json=payload, timeout=15)
                 if res.status_code != 200:
-                    logger.warning("LLM API call (%s) failed with status %s: %s", model, res.status_code, res.text[:200])
-                    return None
+                    err_msg = res.text[:300]
+                    logger.warning("LLM API call (%s) failed with status %s: %s", model, res.status_code, err_msg)
+                    return {
+                        "ok": False,
+                        "session_id": self.session_id,
+                        "response": (
+                            f"⚠️ **LLM API Error (HTTP {res.status_code}):**\n"
+                            f"The model `{model}` failed with the following response from `{api_base}`:\n"
+                            f"```text\n{err_msg}\n```\n"
+                            "Please check your API key and permissions in `.env`."
+                        ),
+                        "thought_trace": self.step_trace,
+                        "actions": [],
+                    }
 
                 data = res.json()
                 assistant_msg = data.get("choices", [{}])[0].get("message", {})

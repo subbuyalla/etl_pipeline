@@ -474,20 +474,15 @@ def process_copilot_turn(
     context: dict[str, Any] | None = None,
     history: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
-    """Process a single copilot turn using the Autonomous ReAct Agentic Runtime."""
+    """Process a single copilot turn using 100% Autonomous LLM ReAct Runtime (Zero fallback)."""
     from application.src.services.agentic_runtime import AgenticRuntime
 
     ctx = context or {}
     user_query = (message or "").strip()
     runtime = AgenticRuntime(session_id=ctx.get("session_id"))
 
-    # 1. Attempt Multi-Step ReAct Tool-Calling loop if external LLM is configured
-    llm_result = runtime.run_llm_react_loop(query=user_query, context=ctx, history=history)
-    if llm_result and llm_result.get("response"):
-        return llm_result
-
-    # 2. Autonomous Multi-Hop ReAct Chain with self-correction & HITL approval proposals
-    return runtime.run_deterministic_react_chain(query=user_query, context=ctx)
+    # 100% LLM ReAct Tool-Calling loop — No rule-based fallback!
+    return runtime.run_llm_react_loop(query=user_query, context=ctx, history=history)
 
 
 def get_contextual_suggestions(context: dict[str, Any]) -> list[str]:
