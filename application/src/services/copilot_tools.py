@@ -44,6 +44,9 @@ ALLOWED_TABLES = {
     "obs_metric_rollups_daily",
     "obs_metric_observations",
     "obs_collector_heartbeats",
+    "obs_agent_sessions",
+    "obs_agent_steps",
+    "obs_agent_pending_actions",
 }
 
 FORBIDDEN_KEYWORDS = {
@@ -411,3 +414,192 @@ def execute_ops_action(action_type: str, payload: dict[str, Any], tenant_id: str
             }
 
         return {"ok": False, "error": f"Unknown action_type '{action_type}'"}
+
+
+def list_registered_pipelines(status_filter: str | None = None, tool_filter: str | None = None) -> dict[str, Any]:
+    """Retrieve list of registered pipelines with their configured tools, schemas, and status."""
+    with get_connection() as conn:
+        where_clauses = []
+        params = []
+        if status_filter == "active":
+            where_clauses.append("is_active = 1")
+        elif status_filter == "inactive":
+            where_clauses.append("is_active = 0")
+        if tool_filter and tool_filter != "all":
+            where_clauses.append("(LOWER(source_tool) = %s OR LOWER(etl_tool) = %s OR LOWER(target_tool) = %s)")
+            params.extend([tool_filter.lower(), tool_filter.lower(), tool_filter.lower()])
+
+        where_str = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+        sql = f"""
+            SELECT pipeline_id, pipeline_name, description, source_tool, source_schema,
+                   etl_tool, target_tool, target_schema, is_active, created_at, updated_at
+            FROM obs_pipelines
+            {where_str}
+            ORDER BY pipeline_name ASC
+            LIMIT 50
+        """
+        rows = fetchall(conn, sql, tuple(params) if params else None)
+        return {
+            "ok": True,
+            "total_pipelines": len(rows),
+            "pipelines": [
+                {
+                    "pipeline_id": r.get("pipeline_id"),
+                    "name": r.get("pipeline_name"),
+                    "source_tool": r.get("source_tool") or "-",
+                    "source_schema": r.get("source_schema") or "-",
+                    "etl_tool": r.get("etl_tool") or "-",
+                    "target_tool": r.get("target_tool") or "-",
+                    "target_schema": r.get("target_schema") or "-",
+                    "is_active": bool(r.get("is_active")),
+                    "created_at": str(r.get("created_at")),
+                }
+                for r in rows
+            ]
+        }
+
+
+def list_active_incidents(status: str | None = "open", severity: str | None = None) -> dict[str, Any]:
+    """Retrieve list of active or past incidents."""
+    with get_connection() as conn:
+        where_clauses = []
+        params = []
+        if status and status != "all":
+            where_clauses.append("LOWER(status) = %s")
+            params.append(status.lower())
+        if severity and severity != "all":
+            where_clauses.append("LOWER(severity) = %s")
+            params.append(severity.lower())
+
+        where_str = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+        sql = f"""
+            SELECT incident_id, pipeline_id, pipeline_name, status, severity, title, description, run_id, opened_at
+            FROM obs_incidents
+            {where_str}
+            ORDER BY opened_at DESC
+            LIMIT 25
+        """
+        rows = fetchall(conn, sql, tuple(params) if params else None)
+        return {
+            "ok": True,
+            "total_incidents": len(rows),
+            "incidents": [
+                {
+                    "id": r.get("incident_id"),
+                    "pipeline_id": r.get("pipeline_id"),
+                    "pipeline_name": r.get("pipeline_name") or r.get("pipeline_id"),
+                    "severity": r.get("severity") or "medium",
+                    "status": r.get("status") or "open",
+                    "title": r.get("title"),
+                    "description": r.get("description"),
+                    "run_id": r.get("run_id"),
+                    "opened_at": str(r.get("opened_at")),
+                }
+                for r in rows
+            ]
+        }
+
+
+COPILOT_TOOLS_SCHEMA = [
+    {
+        "type": "function",
+        "function": {
+            "name": "list_pipelines",
+            "description": "Get the list of all registered pipelines in the platform with their source, ETL, and target connectors (Snowflake, Informatica, MySQL, dbt, etc.) and active status.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "status_filter": {"type": "string", "enum": ["active", "inactive", "all"], "description": "Filter by pipeline active status"},
+                    "tool_filter": {"type": "string", "description": "Optional tool name like snowflake, informatica, dbt"}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "diagnose_pipeline_failure",
+            "description": "Perform root cause analysis on a pipeline or run. Returns error messages, failed task nodes, Snowflake query errors, and upstream lineage blocks.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pipeline_id": {"type": "string", "description": "Pipeline ID or name"},
+                    "run_id": {"type": "string", "description": "Specific run ID"}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "inspect_data_quality",
+            "description": "Inspect data quality check results, passing/warning/failing breakdown, rule thresholds, and 7-day score trends.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pipeline_id": {"type": "string", "description": "Optional pipeline ID to filter checks"},
+                    "days": {"type": "integer", "description": "Lookback window in days (default 7)"}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_observability_health",
+            "description": "Retrieve 7-day aggregated observability health: execution success rates, run durations, processed row volumes, and top failing pipelines.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tool_filter": {"type": "string", "description": "Optional connector tool filter (e.g. informatica, snowflake, dbt)"},
+                    "days": {"type": "integer", "description": "Lookback days (default 7)"}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_incidents",
+            "description": "List active or past triage incidents across pipelines.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "status": {"type": "string", "enum": ["open", "resolved", "all"], "description": "Filter by incident status"},
+                    "severity": {"type": "string", "description": "Filter by critical, high, medium, low"}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_metadata_sql",
+            "description": "Run a secure read-only SQL SELECT query against obs_* metadata tables when custom ad-hoc counts or column lookups are requested.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sql": {"type": "string", "description": "A valid read-only SELECT query against obs_* tables"}
+                },
+                "required": ["sql"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_incident_action",
+            "description": "Create a new incident ticket in the system for a pipeline failure.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pipeline_id": {"type": "string", "description": "Target pipeline ID"},
+                    "severity": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
+                    "title": {"type": "string", "description": "Incident title"},
+                    "description": {"type": "string", "description": "Incident description"}
+                },
+                "required": ["pipeline_id", "title"]
+            }
+        }
+    }
+]

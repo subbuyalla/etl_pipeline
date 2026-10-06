@@ -83,6 +83,9 @@ export function CopilotProvider({ children }) {
         intent: data.intent,
         actions: data.actions || [],
         data: data.data,
+        thought_trace: data.thought_trace || [],
+        pending_approval: data.pending_approval || null,
+        session_id: data.session_id || null,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       };
 
@@ -102,6 +105,46 @@ export function CopilotProvider({ children }) {
       setIsLoading(false);
     }
   }, [activeContext, messages]);
+
+  const approvePendingAction = useCallback(async (actionId, approved = true) => {
+    setIsLoading(true);
+    try {
+      const res = await fetch('/api/v1/copilot/approve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action_id: actionId, approved }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `approval_${Date.now()}`,
+            role: 'assistant',
+            content: approved
+              ? `✅ **Action Approved & Executed:** ${data.message || 'The operational change has been committed.'}`
+              : `❌ **Action Rejected:** The proposed action was cancelled by user.`,
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          },
+        ]);
+      } else {
+        throw new Error(data.error || 'Action approval failed');
+      }
+    } catch (err) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `approval_err_${Date.now()}`,
+          role: 'assistant',
+          content: `❌ **Approval Error:** ${err.message}`,
+          isError: true,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        },
+      ]);
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
 
   const executeAction = useCallback(async (actionType, payload) => {
     setIsLoading(true);
@@ -183,6 +226,7 @@ export function CopilotProvider({ children }) {
         suggestions,
         refreshSuggestions,
         executeAction,
+        approvePendingAction,
         clearMessages,
       }}
     >

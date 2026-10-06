@@ -69,3 +69,50 @@ async def copilot_suggestions(
     context = payload.get("context") or {}
     suggestions = get_contextual_suggestions(context)
     return {"ok": True, "suggestions": suggestions}
+
+
+@router.post("/approve")
+async def copilot_approve(
+    payload: dict[str, Any] = Body(...),
+):
+    """Human-in-the-Loop decision gateway: approve or reject a proposed action."""
+    from application.src.services.agent_session_store import resolve_pending_action
+
+    action_id = str(payload.get("action_id") or "")
+    approved = bool(payload.get("approved", True))
+
+    if not action_id:
+        raise HTTPException(status_code=400, detail="action_id is required")
+
+    resolved = resolve_pending_action(action_id=action_id, approved=approved)
+    if not resolved.get("ok"):
+        return resolved
+
+    if approved:
+        # Execute the approved mutation
+        action_type = resolved.get("action_type")
+        act_payload = resolved.get("payload") or {}
+        exec_res = execute_ops_action(action_type=action_type, payload=act_payload)
+        return {
+            "ok": True,
+            "decision": "approved",
+            "action_id": action_id,
+            "execution": exec_res,
+            "message": f"Action approved and executed: {exec_res.get('message', 'Success')}",
+        }
+    else:
+        return {
+            "ok": True,
+            "decision": "rejected",
+            "action_id": action_id,
+            "message": "Action was cancelled by user.",
+        }
+
+
+@router.get("/sessions/{session_id}/steps")
+async def copilot_session_steps(session_id: str):
+    """Retrieve full chronological thought trace of an agent investigation."""
+    from application.src.services.agent_session_store import get_session_steps
+
+    steps = get_session_steps(session_id)
+    return {"ok": True, "session_id": session_id, "steps": steps}

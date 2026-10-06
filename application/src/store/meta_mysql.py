@@ -807,6 +807,57 @@ def ensure_tables(conn) -> None:
             )
         except Exception:
             pass
+
+        # ── Agentic Framework Session & Step Checkpointer Tables ──
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS obs_agent_sessions (
+              session_id VARCHAR(64) NOT NULL,
+              tenant_id VARCHAR(128) NULL DEFAULT 'default',
+              title VARCHAR(255) NULL,
+              status VARCHAR(32) NOT NULL DEFAULT 'active',
+              ambient_context_json LONGTEXT NULL,
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+              PRIMARY KEY (session_id),
+              KEY ix_agent_sess_status (status)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS obs_agent_steps (
+              step_id BIGINT NOT NULL AUTO_INCREMENT,
+              session_id VARCHAR(64) NOT NULL,
+              step_number INT NOT NULL DEFAULT 1,
+              agent_role VARCHAR(64) NOT NULL DEFAULT 'Supervisor',
+              thought TEXT NULL,
+              action_tool VARCHAR(64) NULL,
+              action_input_json LONGTEXT NULL,
+              observation_json LONGTEXT NULL,
+              reflection TEXT NULL,
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              PRIMARY KEY (step_id),
+              KEY ix_agent_steps_sess (session_id, step_number)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS obs_agent_pending_actions (
+              action_id VARCHAR(64) NOT NULL,
+              session_id VARCHAR(64) NOT NULL,
+              action_type VARCHAR(64) NOT NULL,
+              action_payload_json LONGTEXT NOT NULL,
+              status VARCHAR(32) NOT NULL DEFAULT 'pending',
+              proposed_by VARCHAR(64) NULL,
+              decided_at DATETIME NULL,
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              PRIMARY KEY (action_id),
+              KEY ix_agent_act_sess (session_id, status)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
+        )
     conn.commit()
     _TABLES_ENSURED = True
 

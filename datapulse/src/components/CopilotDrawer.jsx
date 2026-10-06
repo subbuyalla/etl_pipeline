@@ -161,6 +161,73 @@ function renderMarkdown(text) {
   return elements;
 }
 
+function ThoughtTrace({ trace }) {
+  const [expanded, setExpanded] = useState(false);
+  if (!trace || trace.length === 0) return null;
+
+  return (
+    <div className="copilot-thought-accordion">
+      <button
+        type="button"
+        className="copilot-thought-toggle"
+        onClick={() => setExpanded(!expanded)}
+      >
+        <span className="copilot-thought-title">
+          🧠 Autonomous Reasoning ({trace.length} step{trace.length !== 1 ? 's' : ''})
+        </span>
+        <span className="copilot-thought-icon">{expanded ? '▲' : '▼'}</span>
+      </button>
+
+      {expanded && (
+        <div className="copilot-thought-steps">
+          {trace.map((t, idx) => (
+            <div key={idx} className="copilot-thought-step">
+              <div className="copilot-step-meta">
+                <span className="copilot-agent-badge">{t.agent || 'Agent'}</span>
+                {t.tool && <span className="copilot-tool-badge">⚡ {t.tool}</span>}
+              </div>
+              {t.thought && <div className="copilot-step-thought">{t.thought}</div>}
+              {t.observation && <div className="copilot-step-obs">Observed: {t.observation}</div>}
+              {t.reflection && <div className="copilot-step-reflect">Reflection: {t.reflection}</div>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ApprovalCard({ approval, onDecision, disabled }) {
+  if (!approval) return null;
+  return (
+    <div className="copilot-approval-card">
+      <div className="copilot-approval-header">
+        <span className="copilot-approval-badge">⚠️ Human-in-the-Loop Gateway</span>
+      </div>
+      <div className="copilot-approval-title">{approval.title || 'Approve Operational Mutation?'}</div>
+      {approval.summary && <div className="copilot-approval-summary">{approval.summary}</div>}
+      <div className="copilot-approval-buttons">
+        <button
+          type="button"
+          className="copilot-btn-approve"
+          onClick={() => onDecision(approval.action_id, true)}
+          disabled={disabled}
+        >
+          ✅ Approve Action
+        </button>
+        <button
+          type="button"
+          className="copilot-btn-reject"
+          onClick={() => onDecision(approval.action_id, false)}
+          disabled={disabled}
+        >
+          ❌ Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function CopilotDrawer() {
   const location = useLocation();
   const {
@@ -175,6 +242,7 @@ export default function CopilotDrawer() {
     isLoading,
     suggestions,
     executeAction,
+    approvePendingAction,
     clearMessages,
   } = useCopilot();
 
@@ -285,7 +353,21 @@ export default function CopilotDrawer() {
           {messages.map((msg) => (
             <div key={msg.id} className={`copilot-message ${msg.role}`}>
               <div className="copilot-bubble">
+                {/* Autonomous Thought Trace Accordion */}
+                {msg.thought_trace && msg.thought_trace.length > 0 && (
+                  <ThoughtTrace trace={msg.thought_trace} />
+                )}
+
                 <div className="copilot-markdown">{renderMarkdown(msg.content)}</div>
+
+                {/* Human-in-the-Loop Approval Card */}
+                {msg.pending_approval && (
+                  <ApprovalCard
+                    approval={msg.pending_approval}
+                    onDecision={approvePendingAction}
+                    disabled={isLoading}
+                  />
+                )}
 
                 {/* Action Buttons / Interactive Chips */}
                 {msg.actions && msg.actions.length > 0 && (
