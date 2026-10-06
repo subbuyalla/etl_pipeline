@@ -33,15 +33,15 @@ logger = logging.getLogger(__name__)
 
 MUTATING_TOOLS = {"create_incident_action", "acknowledge_alert_action", "trigger_sync_action"}
 
-SYSTEM_PROMPT = """You are DataPulse Copilot, an enterprise Multi-Agent Observability System operating on an autonomous ReAct loop.
-You have specialized skills/tools to investigate data estates.
+SYSTEM_PROMPT = """You are DataPulse Copilot, a friendly, intelligent, and conversational Enterprise DataOps & Observability assistant.
+You operate on an autonomous ReAct reasoning loop with direct access to database telemetry tools.
 
-REASONING PROTOCOL:
-1. Decompose the user request into concrete investigative steps.
-2. Call tools one-by-one to collect factual evidence.
-3. If a tool call errors or returns empty results, REFLECT on the error, adjust your parameters, and self-correct.
-4. When you have collected sufficient evidence, synthesize a clear, comprehensive final answer.
-5. If the user asks to perform a mutating operational action (e.g., create an incident), specify the parameters clearly for human approval.
+CONVERSATIONAL GUIDELINES:
+1. Speak naturally, warmly, and clearly like a trusted Staff Data Engineer colleague.
+2. If the user greets you (e.g. "hi", "hello", "how are you") or asks about your capabilities, converse naturally, introduce yourself, and offer helpful next steps without abruptly dumping metrics.
+3. When the user asks about data pipelines, incidents, run failures, or data quality, formulate your investigative plan, call the appropriate tools autonomously, and synthesize the results in clean markdown with tables and key insights.
+4. If a tool call errors or returns empty results, reflect on the error, adjust your query parameters, and self-correct.
+5. If the user requests an operational mutation (such as creating an incident or triggering a sync), clearly specify the parameters for human approval.
 """
 
 
@@ -97,6 +97,93 @@ class AgenticRuntime:
         q = (query or "").lower().strip()
         pid = context.get("active_pipeline_id")
         tool = context.get("active_tool")
+
+        # 0. Conversational Greetings & Capabilities
+        greeting_match = re.search(r"^(hi|hello|hey|hola|greetings|good\s+(morning|afternoon|evening)|howdy)\b", q)
+        capabilities_match = re.search(r"(who\s+are\s+you|what\s+can\s+you\s+do|help|capabilities|how\s+to\s+use)", q)
+        if greeting_match or capabilities_match:
+            thought = "User initiated conversational dialogue. Formulating natural introduction and offering relevant Observability workflows."
+            self.step_trace.append({
+                "step": 1,
+                "agent": "Supervisor",
+                "thought": thought,
+                "tool": "conversational_handler",
+                "observation": "Greeting acknowledged.",
+            })
+            record_step(self.session_id, 1, "Supervisor", thought, "conversational_handler", {}, {"status": "greeted"}, "Warm conversational response prepared.")
+
+            resp = (
+                "Hello! 👋 I'm **DataPulse Copilot**, your enterprise DataOps & Observability assistant.\n\n"
+                "I'm here to help you monitor pipelines, troubleshoot failures, and track data reliability in real time. Here's what we can do:\n\n"
+                "- 🔍 **Pipelines Catalog:** Ask me *\"Give me the list of pipelines\"* to see all active sources, ETL tools, and destinations.\n"
+                "- 🛠️ **Root Cause Analysis (RCA):** Ask me *\"Diagnose failure for healthcare_pipeline\"* to inspect stacktraces, failed dbt/Informatica steps, and query history.\n"
+                "- 📊 **Data Quality & Anomalies:** Ask me *\"Explain data quality status\"* to view test assertions, pass rates, and null violations.\n"
+                "- 🚨 **Incident Management:** Ask me *\"Show active incidents\"* to triage open alerts or propose remediation tickets.\n\n"
+                "What would you like to check today?"
+            )
+            return {
+                "ok": True,
+                "session_id": self.session_id,
+                "response": resp,
+                "thought_trace": self.step_trace,
+                "actions": [
+                    {"label": "List Registered Pipelines", "query": "give me the list of pipelines"},
+                    {"label": "Diagnose healthcare_pipeline", "query": "Diagnose failure for healthcare_pipeline"},
+                    {"label": "Check Data Quality", "query": "Explain data quality status"},
+                    {"label": "Show Active Incidents", "query": "Show active open incidents"},
+                ],
+            }
+
+        # 0b. Conversational Thanks / Courtesies
+        if re.search(r"^(thanks|thank\s+you|awesome|great|cool|perfect|good\s+job)\b", q):
+            thought = "User expressed gratitude. Acknowledging conversationally."
+            self.step_trace.append({
+                "step": 1,
+                "agent": "Supervisor",
+                "thought": thought,
+                "tool": "conversational_handler",
+                "observation": "Polite acknowledgment.",
+            })
+            record_step(self.session_id, 1, "Supervisor", thought, "conversational_handler", {}, {"status": "acknowledged"}, "Acknowledged.")
+            return {
+                "ok": True,
+                "session_id": self.session_id,
+                "response": "You're very welcome! 😊 Let me know whenever you'd like to inspect run logs, check data quality scores, or troubleshoot failures.",
+                "thought_trace": self.step_trace,
+                "actions": [
+                    {"label": "List Pipelines", "query": "give me the list of pipelines"},
+                    {"label": "Check Data Quality", "query": "Explain data quality status"},
+                ],
+            }
+
+        # 0c. Incident / Alerts Listing Intent
+        if any(k in q for k in ["incident", "incidents", "alert", "alerts", "open issue"]):
+            thought = "User requested active incidents triage. Invoking list_active_incidents tool."
+            res = execute_tool_safely("list_active_incidents", {"pipeline_id": pid}, context)
+            record_step(self.session_id, 1, "Supervisor", thought, "list_active_incidents", {"pipeline_id": pid}, res, "Incidents retrieved.")
+            self.step_trace.append({"step": 1, "agent": "Supervisor", "thought": thought, "tool": "list_active_incidents", "observation": f"Found {res.get('total_incidents', 0)} open incidents."})
+
+            incs = res.get("incidents", [])
+            lines = [
+                f"### Active Open Incidents ({len(incs)} total)",
+                "| Severity | Title | Pipeline | Opened At |",
+                "| :--- | :--- | :--- | :--- |",
+            ]
+            for inc in incs:
+                sev_badge = "🔴 critical" if inc.get("severity") == "critical" else ("🟡 high" if inc.get("severity") == "high" else f"`{inc.get('severity')}`")
+                lines.append(f"| {sev_badge} | **{inc.get('title')}** | `{inc.get('pipeline_name') or inc.get('pipeline_id')}` | {inc.get('created_at')} |")
+            lines.append("\n> 💡 **Tip:** Ask *\"Diagnose failure for {pipeline}\"* to investigate the root cause.")
+
+            return {
+                "ok": True,
+                "session_id": self.session_id,
+                "response": "\n".join(lines),
+                "thought_trace": self.step_trace,
+                "actions": [
+                    {"label": f"Diagnose {incs[0].get('pipeline_name') or 'Top Incident'}", "query": f"Diagnose failure for {incs[0].get('pipeline_id')}"} if incs else {},
+                    {"label": "Check Data Quality", "query": "Explain data quality status"},
+                ],
+            }
 
         # 1. Pipeline Listing Intent
         if any(k in q for k in ["pipeline", "pipelines"]) and any(k in q for k in ["list", "show", "give", "what", "all", "catalog"]):
@@ -353,6 +440,7 @@ class AgenticRuntime:
                 }
                 res = requests.post(f"{api_base.rstrip('/')}/chat/completions", headers=headers, json=payload, timeout=12)
                 if res.status_code != 200:
+                    logger.warning("LLM API call (%s) failed with status %s: %s", model, res.status_code, res.text[:200])
                     return None
 
                 data = res.json()
