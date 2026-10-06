@@ -60,6 +60,67 @@ def _detect_intent(query: str, context: dict[str, Any]) -> str:
     return "ANALYTICS"
 
 
+def call_external_llm(
+    user_query: str,
+    grounded_data: dict[str, Any] | list[Any],
+    history: list[dict[str, str]] | None = None,
+) -> str | None:
+    """Call external OpenAI-compatible or custom LLM if configured via environment variables."""
+    openrouter_key = os.getenv("OPENROUTER_API_KEY")
+    api_key = openrouter_key or os.getenv("OPENAI_API_KEY") or os.getenv("COPILOT_API_KEY")
+
+    if openrouter_key and not os.getenv("OPENAI_API_BASE") and not os.getenv("COPILOT_API_BASE"):
+        api_base = "https://openrouter.ai/api/v1"
+        model = os.getenv("OPENROUTER_MODEL") or os.getenv("COPILOT_MODEL") or "meta-llama/llama-3.3-70b-instruct:free"
+    else:
+        api_base = os.getenv("OPENAI_API_BASE") or os.getenv("COPILOT_API_BASE") or "https://api.openai.com/v1"
+        model = os.getenv("COPILOT_MODEL", "gpt-4o-mini")
+
+    is_local_endpoint = "localhost" in api_base or "127.0.0.1" in api_base
+    if not api_key and not is_local_endpoint:
+        return None
+
+    try:
+        import requests
+
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        if history:
+            for h in history[-4:]:
+                messages.append({"role": h.get("role", "user"), "content": h.get("content", "")})
+
+        prompt_with_data = (
+            f"User Question: {user_query}\n\n"
+            f"Platform Grounded Context Data:\n"
+            f"```json\n{json.dumps(grounded_data, default=str)[:3500]}\n```\n\n"
+            f"Answer the user's question clearly, concisely, and actionably using the grounded data above."
+        )
+        messages.append({"role": "user", "content": prompt_with_data})
+
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key or 'ollama'}",
+            "HTTP-Referer": "http://localhost:5173",
+            "X-Title": "DataPulse Copilot",
+        }
+        res = requests.post(
+            f"{api_base.rstrip('/')}/chat/completions",
+            headers=headers,
+            json={"model": model, "messages": messages, "temperature": 0.2, "max_tokens": 800},
+            timeout=12,
+        )
+        if res.status_code == 200:
+            data = res.json()
+            choices = data.get("choices") or []
+            if choices:
+                content = choices[0].get("message", {}).get("content")
+                if content and content.strip():
+                    return content.strip()
+    except Exception as exc:
+        logger.debug("External LLM not reachable, using native engine: %s", exc)
+
+    return None
+
+
 def process_copilot_turn(
     message: str,
     context: dict[str, Any] | None = None,
@@ -328,6 +389,20 @@ def process_copilot_turn(
         for r in rows:
             lines.append(f"| `{r.get('pipeline_id')}` | **{r.get('pipeline_name')}** | `{r.get('source_tool') or '-'}` | `{r.get('etl_tool') or '-'}` | `{r.get('target_tool') or '-'}` | {'🟢' if r.get('is_active') else '⚪'} |")
         return {"ok": True, "response": "\n".join(lines), "data": rows}
+
+    # For general questions, ground with current platform overview and invoke LLM if configured
+    overview_analytics = get_observability_analytics(tool_filter=active_tool, days=7)
+    llm_resp = call_external_llm(user_query, overview_analytics, history)
+    if llm_resp:
+        return {
+            "ok": True,
+            "intent": "GENERAL_LLM",
+            "response": llm_resp,
+            "actions": [
+                {"label": "Show Pipeline Health", "query": "What is our overall pipeline health?"},
+                {"label": "Explain Data Quality", "query": "Explain data quality status"},
+            ]
+        }
 
     return {
         "ok": True,
