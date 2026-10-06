@@ -239,7 +239,10 @@ def build_run_where(
 
 def fetchall(conn, sql: str, params: tuple | list | None = None) -> list[dict]:
     with conn.cursor() as cur:
-        cur.execute(sql, tuple(params or ()))
+        if params is not None and len(params) > 0:
+            cur.execute(sql, tuple(params))
+        else:
+            cur.execute(sql)
         return list(cur.fetchall() or [])
 
 

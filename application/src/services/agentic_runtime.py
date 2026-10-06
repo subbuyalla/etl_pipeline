@@ -185,8 +185,15 @@ class AgenticRuntime:
                 ],
             }
 
-        # 1. Pipeline Listing Intent
-        if any(k in q for k in ["pipeline", "pipelines"]) and any(k in q for k in ["list", "show", "give", "what", "all", "catalog"]):
+        # 1. Pipeline Listing Intent (Strict catalog query only)
+        catalog_patterns = [
+            r"\b(list\s+(of\s+)?pipelines?|all\s+pipelines?|registered\s+pipelines?|show\s+(all\s+)?pipelines?|pipeline\s+catalog|what\s+pipelines?\s+(do\s+we\s+have|are\s+there|exist))\b",
+            r"^pipelines?$",
+            r"^(give|show)\s+(me\s+)?(all\s+)?(the\s+)?pipelines?$",
+        ]
+        is_catalog_query = any(re.search(pat, q) for pat in catalog_patterns) and not any(k in q for k in ["null", "fail", "error", "broken", "run", "log", "metric", "dq", "quality", "target", "value", "table", "order", "health", "data"])
+
+        if is_catalog_query:
             # Hop 1: List pipelines
             thought = "User requested a catalog of pipelines. Invoking list_pipelines tool."
             res = execute_tool_safely("list_pipelines", {"tool_filter": tool}, context)
@@ -317,34 +324,101 @@ class AgenticRuntime:
                 ],
             }
 
-        # 3. Data Quality Investigation (DQ Specialist Loop)
-        if any(k in q for k in ["quality", "dq", "checks", "test", "completeness", "accuracy", "validity"]):
-            thought1 = "User requested Data Quality diagnosis. Invoking inspect_data_quality tool."
-            dq_res = execute_tool_safely("inspect_data_quality", {"pipeline_id": pid, "days": 7}, context)
+        # 3. Data Quality & Null Values Investigation (DQ Specialist Loop)
+        if any(k in q for k in ["quality", "dq", "checks", "test", "completeness", "accuracy", "validity", "null", "nulls", "missing", "nan", "blank", "uniqueness"]):
+            # Extract target pipeline if specified in query text
+            target_pid = pid
+            target_pname = None
+            pipe_res = execute_tool_safely("list_pipelines", {}, context)
+            pipes = pipe_res.get("pipelines", [])
+            for p in pipes:
+                pn = str(p.get("name", "")).lower()
+                pid_candidate = str(p.get("pipeline_id", "")).lower()
+                if pn in q or pn.replace("_", " ") in q or pid_candidate in q or ("order" in q and "order" in pn) or ("health" in q and "health" in pn):
+                    target_pid = p.get("pipeline_id")
+                    target_pname = p.get("name")
+                    break
+
+            is_null_query = any(k in q for k in ["null", "nulls", "missing", "nan", "blank", "completeness"])
+            thought1 = f"User requested {'null value and completeness analysis' if is_null_query else 'Data Quality diagnosis'} for {target_pname or target_pid or 'all pipelines'}. Invoking inspect_data_quality tool."
+            dq_res = execute_tool_safely("inspect_data_quality", {"pipeline_id": target_pid, "days": 7}, context)
             self.step_trace.append({"step": 1, "agent": "DQSpecialist", "thought": thought1, "tool": "inspect_data_quality", "observation": f"Overall score: {dq_res.get('overall_score_pct')}%"})
-            record_step(self.session_id, 1, "DQSpecialist", thought1, "inspect_data_quality", {"pipeline_id": pid}, dq_res, "Quality summary compiled.")
+            record_step(self.session_id, 1, "DQSpecialist", thought1, "inspect_data_quality", {"pipeline_id": target_pid}, dq_res, "Quality summary compiled.")
+
+            # Hop 2: For null queries, inspect specific null/completeness rules and check results
+            null_rules = []
+            if target_pid:
+                rule_sql = f"SELECT rule_name, dataset_id, column_name, rule_type, dimension, severity FROM obs_dq_rules WHERE pipeline_id = '{target_pid}' AND (rule_type LIKE '%null%' OR dimension = 'completeness')"
+                rule_res = execute_tool_safely("query_metadata_sql", {"sql": rule_sql}, context)
+                null_rules = rule_res.get("rows", [])
+                thought2 = f"Queried configured null/completeness assertions for {target_pname}. Found {len(null_rules)} rule(s)."
+                self.step_trace.append({"step": 2, "agent": "DQSpecialist", "thought": thought2, "tool": "query_metadata_sql", "observation": f"{len(null_rules)} rules found."})
+                record_step(self.session_id, 2, "DQSpecialist", thought2, "query_metadata_sql", {"sql": rule_sql}, rule_res, "Rule assertions analyzed.")
 
             summ = dq_res.get("summary", {})
             score = dq_res.get("overall_score_pct", 100.0)
             badge = "🟢 Healthy" if score >= 90 else ("🟡 Warning" if score >= 75 else "🔴 Degraded")
-            lines = [
-                f"### Data Quality Analysis {f'for **{pid}**' if pid else ''}",
-                f"- **Overall Quality Score:** **{score}%** ({badge})",
-                f"- **Evaluated Checks (7d):** `{summ.get('total_evaluations', 0)}`",
-                f"- **Passed:** `{summ.get('passed', 0)}` | **Warned:** `{summ.get('warned', 0)}` | **Failed:** `{summ.get('failed', 0)}`",
-                "",
-            ]
-            failures = dq_res.get("recent_failures", [])
-            if failures:
-                lines.extend([
-                    "#### 🚨 Recent Violations",
-                    "| Severity | Check / Monitor | Message | Checked At |",
-                    "| :--- | :--- | :--- | :--- |",
-                ])
-                for f in failures[:5]:
-                    lines.append(f"| `{f.get('severity')}` | `{f.get('monitor_id')}` | {f.get('message') or 'Threshold breach'} | {f.get('checked_at')} |")
+            title_name = f"for **{target_pname or target_pid}**" if (target_pname or target_pid) else ""
+
+            if is_null_query:
+                lines = [
+                    f"### Null Value & Completeness Audit {title_name}",
+                    f"- **Target Pipeline:** `{target_pname or target_pid or 'Global'}`",
+                    f"- **Data Completeness & Quality Score:** **{score}%** ({badge})",
+                    f"- **Total Check Evaluations (7d):** `{summ.get('total_evaluations', 0)}` (`{summ.get('passed', 0)} passed`, `{summ.get('failed', 0)} failed`)",
+                    "",
+                ]
+                if null_rules:
+                    lines.extend([
+                        "#### 📋 Monitored Not-Null & Completeness Rules",
+                        "| Rule Name | Target Dataset | Column | Rule Type | Severity |",
+                        "| :--- | :--- | :--- | :--- | :--- |",
+                    ])
+                    for r in null_rules:
+                        lines.append(f"| `{r.get('rule_name')}` | `{r.get('dataset_id')}` | `{r.get('column_name') or 'table-level'}` | `{r.get('rule_type')}` | `{r.get('severity')}` |")
+                    lines.append("")
+                else:
+                    lines.append("ℹ️ **Configured Rules:** No dedicated custom not-null assertions defined yet for this pipeline. Standard schema completeness checks are evaluated on each run.\n")
+
+                failures = dq_res.get("recent_failures", [])
+                null_failures = [f for f in failures if any(k in str(f.get("message", "")).lower() for k in ["null", "empty", "blank"])]
+                if null_failures:
+                    lines.extend([
+                        "#### 🚨 Detected Null Violations",
+                        "| Severity | Check / Monitor | Message | Checked At |",
+                        "| :--- | :--- | :--- | :--- |",
+                    ])
+                    for f in null_failures[:5]:
+                        lines.append(f"| `{f.get('severity')}` | `{f.get('monitor_id')}` | {f.get('message')} | {f.get('checked_at')} |")
+                elif failures:
+                    lines.extend([
+                        "#### ⚠️ Other Recent Quality Issues",
+                        "| Severity | Check / Monitor | Message | Checked At |",
+                        "| :--- | :--- | :--- | :--- |",
+                    ])
+                    for f in failures[:3]:
+                        lines.append(f"| `{f.get('severity')}` | `{f.get('monitor_id')}` | {f.get('message')} | {f.get('checked_at')} |")
+                else:
+                    lines.append("✅ **Zero null value violations detected** across target database tables in the past 7 days.")
             else:
-                lines.append("✅ **No critical data quality violations found** in active 7-day window.")
+                lines = [
+                    f"### Data Quality Analysis {title_name}",
+                    f"- **Overall Quality Score:** **{score}%** ({badge})",
+                    f"- **Evaluated Checks (7d):** `{summ.get('total_evaluations', 0)}`",
+                    f"- **Passed:** `{summ.get('passed', 0)}` | **Warned:** `{summ.get('warned', 0)}` | **Failed:** `{summ.get('failed', 0)}`",
+                    "",
+                ]
+                failures = dq_res.get("recent_failures", [])
+                if failures:
+                    lines.extend([
+                        "#### 🚨 Recent Violations",
+                        "| Severity | Check / Monitor | Message | Checked At |",
+                        "| :--- | :--- | :--- | :--- |",
+                    ])
+                    for f in failures[:5]:
+                        lines.append(f"| `{f.get('severity')}` | `{f.get('monitor_id')}` | {f.get('message') or 'Threshold breach'} | {f.get('checked_at')} |")
+                else:
+                    lines.append("✅ **No critical data quality violations found** in active 7-day window.")
 
             return {
                 "ok": True,
@@ -352,6 +426,7 @@ class AgenticRuntime:
                 "response": "\n".join(lines),
                 "thought_trace": self.step_trace,
                 "actions": [
+                    {"label": f"Diagnose {target_pname or 'Pipeline'}", "query": f"Diagnose failure for {target_pid}"} if target_pid else {},
                     {"label": "Show Daily Quality Trends", "query": "Show daily quality trends"},
                     {"label": "List Registered Pipelines", "query": "give me the list of pipelines"},
                 ],
