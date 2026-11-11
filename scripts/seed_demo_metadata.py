@@ -4,6 +4,7 @@ Idempotent demo metadata for offline API / UI testing (no live dbt/Snowflake).
 
 Seeds:
   - Always: demo_ecommerce_etl (demo-pipeline-001) — used by offline unit tests
+  - Always: informatica_orders_etl — MySQL → Informatica → MySQL with failed latest run
   - Any pipelines already in obs_pipelines
   - If catalog is empty (besides demo): ecommerce_etl, hr_etl, stock_etl
 
@@ -108,6 +109,7 @@ DEMO_SPEC: dict[str, Any] = {
     "target_tool": "snowflake",
     "target_schema": "ANALYTICS",
     "description": "Demo pipeline for offline observability testing",
+    "latest_status": "success",
     "sources": [
         ("ANALYTICS", "RAW", "STG_ORDERS", ["ORDER_ID", "CUSTOMER_ID", "STATUS"]),
         ("ANALYTICS", "RAW", "STG_CUSTOMERS", ["CUSTOMER_ID", "EMAIL"]),
@@ -118,6 +120,38 @@ DEMO_SPEC: dict[str, Any] = {
     "edges": [
         ("ANALYTICS.RAW.STG_ORDERS", "ANALYTICS.MART.FCT_ORDERS"),
         ("ANALYTICS.RAW.STG_CUSTOMERS", "ANALYTICS.MART.FCT_ORDERS"),
+    ],
+}
+
+# Always seeded: Informatica ETL with a failed latest run (for Incidents / RCA UI)
+INFORMATICA_FAIL_SPEC: dict[str, Any] = {
+    "pipeline_id": "seed-informatica-orders-fail",
+    "pipeline_name": "informatica_orders_etl",
+    "source_tool": "mysql",
+    "source_schema": "src_orders",
+    "etl_tool": "informatica",
+    "target_tool": "mysql",
+    "target_schema": "stg_orders",
+    "description": "Seeded Informatica (IICS) pipeline — latest run failed on mapping",
+    "system_name": "MySQL",
+    "system_type": "DATABASE",
+    "latest_status": "failed",
+    "error_message": (
+        "Informatica task 'm_orders_load' failed: "
+        "[ERROR] Connection to target MySQL timed out while writing STG_ORDERS "
+        "(IICS activity log id=987654). Check network / JDBC credentials."
+    ),
+    "failed_nodes": ["mapping.m_orders_load", "task.s_orders_daily"],
+    "sources": [
+        ("orders_db", "src_orders", "RAW_ORDERS", ["ORDER_ID", "CUSTOMER_ID", "STATUS", "AMOUNT"]),
+        ("orders_db", "src_orders", "RAW_CUSTOMERS", ["CUSTOMER_ID", "EMAIL", "CREATED_AT"]),
+    ],
+    "targets": [
+        ("orders_db", "stg_orders", "STG_ORDERS", ["ORDER_ID", "CUSTOMER_ID", "STATUS", "AMOUNT"]),
+    ],
+    "edges": [
+        ("orders_db.src_orders.RAW_ORDERS", "orders_db.stg_orders.STG_ORDERS"),
+        ("orders_db.src_orders.RAW_CUSTOMERS", "orders_db.stg_orders.STG_ORDERS"),
     ],
 }
 
@@ -170,7 +204,9 @@ def _insert_run(
     rows_read: int,
     rows_written: int,
     relations: list[str],
+    tool_name: str = "dbt",
     failed_nodes: list[str] | None = None,
+    error_message: str | None = None,
 ) -> None:
     cur.execute(
         """
@@ -180,12 +216,15 @@ def _insert_run(
           failed_node, error_message, relations_json, failed_nodes_json
         ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         ON DUPLICATE KEY UPDATE
+          tool_name=VALUES(tool_name),
           status=VALUES(status),
           start_time=VALUES(start_time),
           end_time=VALUES(end_time),
           duration=VALUES(duration),
           rows_read=VALUES(rows_read),
           rows_written=VALUES(rows_written),
+          failed_node=VALUES(failed_node),
+          error_message=VALUES(error_message),
           relations_json=VALUES(relations_json),
           failed_nodes_json=VALUES(failed_nodes_json)
         """,
@@ -194,7 +233,7 @@ def _insert_run(
             run_id,
             pipeline_id,
             pipeline_name,
-            "dbt",
+            tool_name,
             status,
             start,
             end,
@@ -202,7 +241,7 @@ def _insert_run(
             rows_read,
             rows_written,
             (failed_nodes or [None])[0] if failed_nodes else None,
-            None,
+            error_message,
             json.dumps(relations),
             json.dumps(failed_nodes or []),
         ),
@@ -220,6 +259,8 @@ def _upsert_asset(
     rows: int,
     observed_at: datetime,
     column_count: int,
+    system_name: str = "Snowflake",
+    system_type: str = "DATA_WAREHOUSE",
 ) -> str:
     dataset_id = f"{database}.{schema}.{table}"
     cur.execute(
@@ -234,20 +275,22 @@ def _upsert_asset(
           column_count=VALUES(column_count),
           size_bytes=VALUES(size_bytes),
           last_updated_at=VALUES(last_updated_at),
-          observed_at=VALUES(observed_at)
+          observed_at=VALUES(observed_at),
+          system_name=VALUES(system_name),
+          system_type=VALUES(system_type)
         """,
         (
             run_id,
             role,
-            "Snowflake",
-            "DATA_WAREHOUSE",
+            system_name,
+            system_type,
             database,
             schema,
             table,
             "TABLE",
             rows,
             column_count,
-            rows * 120,
+            max(rows, 0) * 120,
             observed_at,
             observed_at,
             dataset_id,
@@ -399,6 +442,14 @@ def _seed_pipeline(cur, conn, spec: dict[str, Any], *, now: datetime) -> dict[st
     sources = spec.get("sources") or []
     targets = spec.get("targets") or []
     edges = spec.get("edges") or []
+    tool_name = str(spec.get("etl_tool") or "dbt")
+    latest_status = str(spec.get("latest_status") or "success").lower()
+    error_message = spec.get("error_message")
+    failed_nodes = list(spec.get("failed_nodes") or [])
+    if pid == DEMO_PIPELINE_ID and not failed_nodes:
+        failed_nodes = [f"model.seed.{pname}.stg_orders"]
+    sys_name = str(spec.get("system_name") or "Snowflake")
+    sys_type = str(spec.get("system_type") or "DATA_WAREHOUSE")
 
     relations = [f"{db}.{sch}.{tbl}" for db, sch, tbl, _ in sources + targets]
 
@@ -418,6 +469,7 @@ def _seed_pipeline(cur, conn, spec: dict[str, Any], *, now: datetime) -> dict[st
         rows_read=480000,
         rows_written=475000,
         relations=relations,
+        tool_name=tool_name,
     )
     for db, sch, tbl, cols in sources:
         _upsert_asset(
@@ -430,6 +482,8 @@ def _seed_pipeline(cur, conn, spec: dict[str, Any], *, now: datetime) -> dict[st
             rows=480000,
             observed_at=prior_end,
             column_count=len(cols),
+            system_name=sys_name,
+            system_type=sys_type,
         )
         _replace_columns(
             cur, run_id=prior_id, role="SOURCE", database=db, schema=sch, table=tbl, columns=cols
@@ -445,6 +499,8 @@ def _seed_pipeline(cur, conn, spec: dict[str, Any], *, now: datetime) -> dict[st
             rows=475000,
             observed_at=prior_end,
             column_count=len(cols),
+            system_name=sys_name,
+            system_type=sys_type,
         )
         _replace_columns(
             cur, run_id=prior_id, role="TARGET", database=db, schema=sch, table=tbl, columns=cols
@@ -469,6 +525,7 @@ def _seed_pipeline(cur, conn, spec: dict[str, Any], *, now: datetime) -> dict[st
             rows_read=480000,
             rows_written=480000,
             relations=relations,
+            tool_name=tool_name,
         )
         for db, sch, tbl, cols in sources:
             _upsert_asset(
@@ -481,6 +538,8 @@ def _seed_pipeline(cur, conn, spec: dict[str, Any], *, now: datetime) -> dict[st
                 rows=480000,
                 observed_at=prior_end,
                 column_count=len(cols),
+                system_name=sys_name,
+                system_type=sys_type,
             )
             _replace_columns(
                 cur,
@@ -502,6 +561,8 @@ def _seed_pipeline(cur, conn, spec: dict[str, Any], *, now: datetime) -> dict[st
                 rows=480000,
                 observed_at=prior_end,
                 column_count=len(cols),
+                system_name=sys_name,
+                system_type=sys_type,
             )
             _replace_columns(
                 cur,
@@ -515,19 +576,25 @@ def _seed_pipeline(cur, conn, spec: dict[str, Any], *, now: datetime) -> dict[st
 
     run_start = now - timedelta(hours=2)
     run_end = now - timedelta(hours=1, minutes=55)
+    is_failed = latest_status in {"failed", "error", "fail"}
+    latest_rows_read = 500000 if not is_failed else 120000
+    latest_rows_written = 495000 if not is_failed else 0
+    latest_target_rows = 495000 if not is_failed else 0
     _insert_run(
         cur,
         run_id=run_id,
         pipeline_id=pid,
         pipeline_name=pname,
-        status="success",
+        status="failed" if is_failed else "success",
         start=run_start,
         end=run_end,
-        duration=300,
-        rows_read=500000,
-        rows_written=495000,
+        duration=95 if is_failed else 300,
+        rows_read=latest_rows_read,
+        rows_written=latest_rows_written,
         relations=relations,
-        failed_nodes=[f"model.seed.{pname}.stg_orders"] if pid == DEMO_PIPELINE_ID else [],
+        tool_name=tool_name,
+        failed_nodes=failed_nodes if is_failed or pid == DEMO_PIPELINE_ID else [],
+        error_message=error_message if is_failed else None,
     )
 
     for db, sch, tbl, cols in sources:
@@ -538,9 +605,11 @@ def _seed_pipeline(cur, conn, spec: dict[str, Any], *, now: datetime) -> dict[st
             database=db,
             schema=sch,
             table=tbl,
-            rows=500000,
+            rows=latest_rows_read,
             observed_at=run_end,
             column_count=len(cols),
+            system_name=sys_name,
+            system_type=sys_type,
         )
         _replace_columns(
             cur, run_id=run_id, role="SOURCE", database=db, schema=sch, table=tbl, columns=cols
@@ -554,9 +623,11 @@ def _seed_pipeline(cur, conn, spec: dict[str, Any], *, now: datetime) -> dict[st
             database=db,
             schema=sch,
             table=tbl,
-            rows=495000,
+            rows=latest_target_rows,
             observed_at=run_end,
             column_count=len(cols),
+            system_name=sys_name,
+            system_type=sys_type,
         )
         _replace_columns(
             cur, run_id=run_id, role="TARGET", database=db, schema=sch, table=tbl, columns=cols
@@ -578,6 +649,8 @@ def _seed_pipeline(cur, conn, spec: dict[str, Any], *, now: datetime) -> dict[st
         "pipeline_id": pid,
         "pipeline_name": pname,
         "run_id": run_id,
+        "etl_tool": tool_name,
+        "latest_status": "failed" if is_failed else "success",
         "checks": checks,
         "lineage_edges": edge_n,
         "source_tables": len(sources),
@@ -595,6 +668,8 @@ def seed() -> dict:
         with conn.cursor() as cur:
             # Always seed classic demo pipeline (offline tests)
             seeded.append(_seed_pipeline(cur, conn, DEMO_SPEC, now=now))
+            # Always seed Informatica failure pipeline for Incidents / failed-run UI
+            seeded.append(_seed_pipeline(cur, conn, INFORMATICA_FAIL_SPEC, now=now))
 
             cur.execute(
                 """
@@ -608,16 +683,22 @@ def seed() -> dict:
             existing_ids = {str(r.get("pipeline_id")) for r in existing}
             existing_names = {str(r.get("pipeline_name") or "") for r in existing}
 
+            always_ids = {DEMO_PIPELINE_ID, INFORMATICA_FAIL_SPEC["pipeline_id"]}
+
             # Seed every existing non-demo pipeline
             for row in existing:
                 pid = str(row.get("pipeline_id"))
-                if pid == DEMO_PIPELINE_ID:
+                if pid in always_ids:
                     continue
                 spec = _default_spec_from_row(row)
                 seeded.append(_seed_pipeline(cur, conn, spec, now=now))
 
-            # If only demo exists, also add catalog templates
-            non_demo = [r for r in existing if str(r.get("pipeline_id")) != DEMO_PIPELINE_ID]
+            # If only always-seeded pipelines exist, also add catalog templates
+            non_demo = [
+                r
+                for r in existing
+                if str(r.get("pipeline_id")) not in always_ids
+            ]
             if not non_demo:
                 for spec in CATALOG_PIPELINES:
                     if spec["pipeline_name"] in existing_names:
