@@ -37,6 +37,35 @@ from application.src.store.meta_mysql import ensure_tables, get_connection, reco
 DEMO_PIPELINE_ID = "demo-pipeline-001"
 DEMO_PIPELINE_NAME = "demo_ecommerce_etl"
 
+# Rich column sets so Lineage "Column" view has shared names + fan-in/out wires
+COLS_ORDERS = [
+    "ORDER_ID", "CUSTOMER_ID", "ORDER_DATE", "STATUS", "AMOUNT", "CURRENCY",
+    "DISCOUNT_PCT", "TAX_AMOUNT", "SHIPPING_COST", "PAYMENT_METHOD",
+    "PRODUCT_SKU", "QUANTITY", "WAREHOUSE_ID", "CHANNEL", "UPDATED_AT",
+    "CREATED_AT", "IS_RETURNED", "REGION",
+]
+COLS_CUSTOMERS = [
+    "CUSTOMER_ID", "EMAIL", "FIRST_NAME", "LAST_NAME", "PHONE",
+    "CITY", "STATE", "COUNTRY", "ZIP_CODE", "SEGMENT",
+    "LIFETIME_VALUE", "CREATED_AT", "UPDATED_AT", "IS_ACTIVE",
+]
+COLS_ORDERS_MART = [
+    "ORDER_ID", "CUSTOMER_ID", "ORDER_DATE", "STATUS", "AMOUNT", "CURRENCY",
+    "DISCOUNT_PCT", "TAX_AMOUNT", "SHIPPING_COST", "PAYMENT_METHOD",
+    "PRODUCT_SKU", "QUANTITY", "WAREHOUSE_ID", "CHANNEL", "UPDATED_AT",
+    "CREATED_AT", "IS_RETURNED", "REGION", "NET_AMOUNT", "CUSTOMER_EMAIL",
+]
+COLS_EMPLOYEES = [
+    "EMPLOYEE_ID", "EMPLOYEE_SALARY", "DEPT", "FIRST_NAME", "LAST_NAME",
+    "EMAIL", "HIRE_DATE", "MANAGER_ID", "JOB_TITLE", "LOCATION",
+    "EMPLOYMENT_STATUS", "UPDATED_AT", "CREATED_AT", "COST_CENTER",
+]
+COLS_STOCK = [
+    "ORDER_ID", "SKU", "QTY", "WAREHOUSE_ID", "UNIT_COST", "UNIT_PRICE",
+    "SUPPLIER_ID", "RECEIVED_AT", "STATUS", "LOT_NUMBER",
+    "EXPIRY_DATE", "UPDATED_AT", "CREATED_AT", "IS_DAMAGED",
+]
+
 # Catalog pipelines when DB has no real pipelines yet (match product templates)
 CATALOG_PIPELINES: list[dict[str, Any]] = [
     {
@@ -49,11 +78,11 @@ CATALOG_PIPELINES: list[dict[str, Any]] = [
         "target_schema": "CLEAN_DATA",
         "description": "Seeded ecommerce pipeline (SRC_DATA → dbt → CLEAN_DATA)",
         "sources": [
-            ("ECOMMERCE", "SRC_DATA", "RAW_CUSTOMERS", ["CUSTOMER_ID", "EMAIL", "CREATED_AT"]),
-            ("ECOMMERCE", "SRC_DATA", "RAW_ORDERS", ["ORDER_ID", "CUSTOMER_ID", "STATUS", "AMOUNT"]),
+            ("ECOMMERCE", "SRC_DATA", "RAW_CUSTOMERS", COLS_CUSTOMERS),
+            ("ECOMMERCE", "SRC_DATA", "RAW_ORDERS", COLS_ORDERS),
         ],
         "targets": [
-            ("ECOMMERCE", "CLEAN_DATA", "MY_FIRST_DBT_MODEL", ["ORDER_ID", "CUSTOMER_ID", "STATUS", "AMOUNT"]),
+            ("ECOMMERCE", "CLEAN_DATA", "MY_FIRST_DBT_MODEL", COLS_ORDERS_MART),
         ],
         "edges": [
             ("ECOMMERCE.SRC_DATA.RAW_ORDERS", "ECOMMERCE.CLEAN_DATA.MY_FIRST_DBT_MODEL"),
@@ -70,10 +99,10 @@ CATALOG_PIPELINES: list[dict[str, Any]] = [
         "target_schema": "FINAL_DATA",
         "description": "Seeded HR pipeline (RAW_DATA → dbt → FINAL_DATA)",
         "sources": [
-            ("HR_ANALYTICS", "RAW_DATA", "RAW_EMPLOYEES", ["EMPLOYEE_ID", "EMPLOYEE_SALARY", "DEPT"]),
+            ("HR_ANALYTICS", "RAW_DATA", "RAW_EMPLOYEES", COLS_EMPLOYEES),
         ],
         "targets": [
-            ("HR_ANALYTICS", "FINAL_DATA", "DIM_EMPLOYEES", ["EMPLOYEE_ID", "EMPLOYEE_SALARY", "DEPT"]),
+            ("HR_ANALYTICS", "FINAL_DATA", "DIM_EMPLOYEES", COLS_EMPLOYEES + ["SALARY_BAND", "TENURE_YEARS"]),
         ],
         "edges": [
             ("HR_ANALYTICS.RAW_DATA.RAW_EMPLOYEES", "HR_ANALYTICS.FINAL_DATA.DIM_EMPLOYEES"),
@@ -89,10 +118,10 @@ CATALOG_PIPELINES: list[dict[str, Any]] = [
         "target_schema": "STAGING",
         "description": "Seeded stock pipeline (RAW → dbt → STAGING)",
         "sources": [
-            ("ANALYTICS_DB", "RAW", "RAW_ORDERS", ["ORDER_ID", "SKU", "QTY"]),
+            ("ANALYTICS_DB", "RAW", "RAW_ORDERS", COLS_STOCK),
         ],
         "targets": [
-            ("ANALYTICS_DB", "STAGING", "STG_ORDERS", ["ORDER_ID", "SKU", "QTY"]),
+            ("ANALYTICS_DB", "STAGING", "STG_ORDERS", COLS_STOCK + ["EXTENDED_COST", "MARGIN_PCT"]),
         ],
         "edges": [
             ("ANALYTICS_DB.RAW.RAW_ORDERS", "ANALYTICS_DB.STAGING.STG_ORDERS"),
@@ -111,11 +140,11 @@ DEMO_SPEC: dict[str, Any] = {
     "description": "Demo pipeline for offline observability testing",
     "latest_status": "success",
     "sources": [
-        ("ANALYTICS", "RAW", "STG_ORDERS", ["ORDER_ID", "CUSTOMER_ID", "STATUS"]),
-        ("ANALYTICS", "RAW", "STG_CUSTOMERS", ["CUSTOMER_ID", "EMAIL"]),
+        ("ANALYTICS", "RAW", "STG_ORDERS", COLS_ORDERS),
+        ("ANALYTICS", "RAW", "STG_CUSTOMERS", COLS_CUSTOMERS),
     ],
     "targets": [
-        ("ANALYTICS", "MART", "FCT_ORDERS", ["ORDER_ID", "CUSTOMER_ID", "STATUS", "AMOUNT"]),
+        ("ANALYTICS", "MART", "FCT_ORDERS", COLS_ORDERS_MART),
     ],
     "edges": [
         ("ANALYTICS.RAW.STG_ORDERS", "ANALYTICS.MART.FCT_ORDERS"),
@@ -143,11 +172,11 @@ INFORMATICA_FAIL_SPEC: dict[str, Any] = {
     ),
     "failed_nodes": ["mapping.m_orders_load", "task.s_orders_daily"],
     "sources": [
-        ("orders_db", "src_orders", "RAW_ORDERS", ["ORDER_ID", "CUSTOMER_ID", "STATUS", "AMOUNT"]),
-        ("orders_db", "src_orders", "RAW_CUSTOMERS", ["CUSTOMER_ID", "EMAIL", "CREATED_AT"]),
+        ("orders_db", "src_orders", "RAW_ORDERS", COLS_ORDERS),
+        ("orders_db", "src_orders", "RAW_CUSTOMERS", COLS_CUSTOMERS),
     ],
     "targets": [
-        ("orders_db", "stg_orders", "STG_ORDERS", ["ORDER_ID", "CUSTOMER_ID", "STATUS", "AMOUNT"]),
+        ("orders_db", "stg_orders", "STG_ORDERS", COLS_ORDERS_MART),
     ],
     "edges": [
         ("orders_db.src_orders.RAW_ORDERS", "orders_db.stg_orders.STG_ORDERS"),
@@ -427,10 +456,14 @@ def _default_spec_from_row(row: dict) -> dict[str, Any]:
         "target_tool": row.get("target_tool") or "snowflake",
         "target_schema": tgt_schema,
         "description": row.get("description") or f"Seeded data for {pname}",
-        "sources": [(db, src_schema, "RAW_ORDERS", ["ORDER_ID", "CUSTOMER_ID", "STATUS"])],
-        "targets": [(db, tgt_schema, "STG_ORDERS", ["ORDER_ID", "CUSTOMER_ID", "STATUS", "AMOUNT"])],
+        "sources": [
+            (db, src_schema, "RAW_ORDERS", COLS_ORDERS),
+            (db, src_schema, "RAW_CUSTOMERS", COLS_CUSTOMERS),
+        ],
+        "targets": [(db, tgt_schema, "STG_ORDERS", COLS_ORDERS_MART)],
         "edges": [
             (f"{db}.{src_schema}.RAW_ORDERS", f"{db}.{tgt_schema}.STG_ORDERS"),
+            (f"{db}.{src_schema}.RAW_CUSTOMERS", f"{db}.{tgt_schema}.STG_ORDERS"),
         ],
     }
 
