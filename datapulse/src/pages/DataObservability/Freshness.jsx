@@ -2,7 +2,7 @@ import { useEffect, useState, useMemo, useCallback } from 'react';
 import {
   CheckCircle, Clock, AlertTriangle, TrendingUp, Search,
   ArrowRight, Calendar, SlidersHorizontal, ChevronLeft, ChevronRight,
-  GitBranch, Layers, RefreshCw, Download,
+  GitBranch, Layers, RefreshCw, Download, Database,
 } from 'lucide-react';
 import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid,
