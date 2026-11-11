@@ -1,8 +1,12 @@
-# Production EC2: API + poller only. MySQL lives on RDS (set DATABASE_URL in .env).
+# Production EC2: API + poller + frontend (UI). MySQL lives on RDS (set DATABASE_URL in .env).
 #
 # Usage:
 #   docker compose -f docker-compose.prod.yml up -d --build
-#   docker compose -f docker-compose.prod.yml logs -f api
+#   docker compose -f docker-compose.prod.yml logs -f api frontend
+#
+# URLs (after deploy):
+#   UI:  http://<ec2-ip>/          (port 80)
+#   API: http://<ec2-ip>:8002      (direct) or via UI nginx proxy /api /v1 /health
 
 services:
   api:
@@ -40,3 +44,20 @@ services:
     depends_on:
       api:
         condition: service_started
+
+  frontend:
+    build:
+      context: ./datapulse
+      dockerfile: Dockerfile
+    ports:
+      - "80:80"
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
